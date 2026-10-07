@@ -62,6 +62,13 @@ class DesktopPluginTests(unittest.TestCase):
         resource = self.server.plugin.resource(p.UI_URI, None)
         self.assertTrue(resource["contents"][0]["text"])
 
+    def test_dispatcher_entrypoint_validates_workspace_before_spawning(self):
+        catalog = {tool["name"]: tool for tool in request(self.server, "tools/list", {})["result"]["tools"]}
+        self.assertIn("dispatch_codex_reminder", catalog)
+        value = self.call("dispatch_codex_reminder", {"reminderId": 757, "workspace": "/definitely/missing/workspace"})
+        self.assertTrue(value["isError"])
+        self.assertIn("workspace", value["structuredContent"]["message"])
+
     def test_settings_merge_and_native_layout(self):
         self.call("update_settings",{"set":{"layout":"columns"}})
         self.call("update_settings",{"set":{"density":"compact"}})

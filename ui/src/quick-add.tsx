@@ -1,5 +1,5 @@
 import React, {useEffect, useRef, useState} from "react";
-import {CalendarDays, Flag, List, Plus, X, AlignLeft, AlertCircle, Image as ImageIcon} from "lucide-react";
+import {CalendarDays, Flag, List, Plus, X, AlignLeft, AlertCircle, Play} from "lucide-react";
 import {DueEditor} from "./date-editor";
 import {Select} from "./pickers";
 import {listChoices} from "./interactions";
@@ -7,8 +7,8 @@ import type {RecordData as D} from "./bridge";
 import {readCaptureImage, type CaptureImage} from "./quick-capture";
 
 /** A preserved draft, placed above the host's bottom conversation composer. */
-export function QuickAdd({draft, update, lists, busy, error, close, save}: {
-  draft: D; update: (draft: D) => void; lists: D[]; busy: boolean; error: string;
+export function QuickAdd({draft, update, lists, busy, error, dispatcherWorkspace, close, save}: {
+  draft: D; update: (draft: D) => void; lists: D[]; busy: boolean; error: string; dispatcherWorkspace?: string;
   close: () => void; save: (another: boolean) => void;
 }) {
   const panel = useRef<HTMLFormElement>(null);
@@ -75,6 +75,7 @@ export function QuickAdd({draft, update, lists, busy, error, close, save}: {
         <label className={"capture-chip " + (draft.priority && draft.priority !== "none" ? "chosen" : "")}><span className="capture-priority">!</span><Select aria-label="Reminder priority" disabled={fieldLocked} value={draft.priority || "none"} onChange={e=>set("priority",e.target.value)}><option value="none">Priority</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></Select></label>
         <button type="button" className={"capture-chip capture-icon " + (draft.flagged ? "flagged" : "")} aria-label="Flag reminder" aria-pressed={Boolean(draft.flagged)} disabled={locked} onClick={()=>set("flagged",!draft.flagged)}><Flag size={15} fill={draft.flagged ? "currentColor" : "none"}/></button>
         <button type="button" className="capture-chip capture-icon" aria-label="Add notes" aria-expanded={notes} disabled={fieldLocked} onClick={()=>setNotes(!notes)}><AlignLeft size={15}/></button>
+        <button type="button" className={"capture-chip capture-icon " + (draft.dispatch_now ? "chosen" : "")} aria-label="Run with Codex immediately" aria-pressed={Boolean(draft.dispatch_now)} title={dispatcherWorkspace ? "Save and start Codex immediately" : "Set a dispatcher workspace in Settings first"} disabled={fieldLocked || !dispatcherWorkspace} onClick={()=>set("dispatch_now",!draft.dispatch_now)}><Play size={15} fill={draft.dispatch_now ? "currentColor" : "none"}/></button>
       </div>
       {dates && <div className="capture-date"><DueEditor value={draft.due || ""} change={v=>set("due",v)}/></div>}
       {error && <div className="capture-error" role="alert"><AlertCircle size={15}/><span>{error}</span></div>}

@@ -58,6 +58,7 @@ import {
   discuss,
   safeLink,
   subscribe,
+  conversationDelivery,
   RecordData as D,
 } from "./bridge";
 import {
@@ -160,6 +161,8 @@ function IconButton({
   );
 }
 function Workspace() {
+  const [delivery, setDelivery] = useState(conversationDelivery.current);
+  useEffect(() => conversationDelivery.subscribe(setDelivery), []);
   const [data, setData] = useState<D>({
       items: [],
       lists: [],
@@ -263,6 +266,23 @@ function Workspace() {
       setBusy(false);
     }
   };
+  const startConversation = (items: D[], intent: string, target: "active" | "new" = "active") => {
+    if (conversationDelivery.locked) return;
+    setError("");
+    // The delivery controller retains the promise and its eventual receipt.
+    // Host confirmation must not block unrelated reminder operations.
+    void discuss(items, intent, target);
+  };
+  const deliveryStatus = delivery && (
+    <div className={"conversation-delivery " + delivery.phase} role="status" aria-live="polite">
+      <p>{delivery.message}</p>
+      {!["preparing", "waiting"].includes(delivery.phase) && (
+        <button onClick={() => conversationDelivery.acknowledge()}>
+          {delivery.phase === "unknown" ? "已检查 Codex，允许重新发送" : "关闭状态提示"}
+        </button>
+      )}
+    </div>
+  );
   const refresh = useCallback(
     async (next = queryRef.current, append = false) => {
       const seq = ++request.current;
@@ -554,22 +574,30 @@ function Workspace() {
   };
   const add = (another: boolean) => run(async () => {
     if (!quickDraft?.title?.trim()) return;
-    const {_capture, ...fields} = quickDraft;
+    const {_capture, dispatch_now, ...fields} = quickDraft;
     const state: CaptureState = _capture || {operationId: crypto.randomUUID(), images: []};
     if (state.images.length && !settings.advancedFeatures)
       throw new Error("Enable Advanced Reminders features in Settings before saving images.");
     const args = Object.fromEntries(Object.entries({...fields, title: fields.title.trim()}).filter(([,v]) => v !== undefined && v !== ""));
-    await saveCapture(state, {
+    const saved = await saveCapture(state, {
       create: operationId => call("workspace_mutate", {operationId, tool: "create_reminder", arguments: args}),
       attach: (reminderId, image) => call("workspace_attach_image", {
         operationId: image.id, reminderId, mimeType: image.mimeType, data: image.data,
       }),
       checkpoint: capture => setQuickDraft({...fields, _capture: capture}),
     });
+    if (dispatch_now) {
+      if (!saved.reminderId) throw new Error("Reminder was saved but no numeric ID was returned for Codex dispatch.");
+      await call("dispatch_codex_reminder", {
+        reminderId: saved.reminderId,
+        workspace: settings.dispatcherWorkspace,
+        keyword: settings.dispatcherKeyword,
+      });
+    }
     // Clear the identity and image draft only after all writes have succeeded.
-    setQuickDraft(another ? {...fields, title: "", notes: ""} : null);
+    setQuickDraft(another ? {...fields, title: "", notes: "", dispatch_now: false} : null);
     setQuickOpen(another);
-    setToast("Reminder and images saved");
+    setToast(dispatch_now ? "Reminder saved and queued for Codex" : "Reminder and images saved");
     await refresh();
   });
   const bulk = (tool: string, args: D) =>
@@ -2217,6 +2245,7 @@ function Workspace() {
             {toast}
           </div>
         )}
+        {modal?.kind !== "conversation" && deliveryStatus}
         {undo && (
           <div className="undo-toast">
             <span>Reminder updated</span>
@@ -2230,7 +2259,7 @@ function Workspace() {
           </div>
         )}
       </main>
-      {quickOpen && quickDraft && <QuickAdd draft={quickDraft} update={setQuickDraft} lists={lists} busy={busy} error={error} close={() => setQuickOpen(false)} save={add}/>}
+      {quickOpen && quickDraft && <QuickAdd draft={quickDraft} update={setQuickDraft} lists={lists} busy={busy} error={error} dispatcherWorkspace={settings.dispatcherWorkspace} close={() => setQuickOpen(false)} save={add}/>}
       {contextMenu && (
         <ContextMenu {...contextMenu} close={() => setContextMenu(null)} />
       )}
@@ -2324,55 +2353,30 @@ function Workspace() {
               response={modal.response}
             />
           )}
-          {modal.kind === "conversation" && (modal.intent ? <div className="watch-review"><textarea aria-label="Monitoring request" rows={7} value={modal.intent} onChange={e=>setModal({...modal,intent:e.target.value})}/><button className="primary" disabled={busy} onClick={()=>run(async()=>{await discuss(modal.items,modal.intent,"new");setModal(null);})}>Start monitoring conversation</button></div> : (
-            <div className="conversation-actions">
+          {modal.kind === "conversation" && <>
+            {deliveryStatus}
+            <p className="conversation-note">请求自动发送；宿主仍可能要求确认内容。收到回执前不会标为已启动。</p>
+            {modal.intent ? <div className="watch-review">
+              <textarea aria-label="Monitoring request" rows={7} value={modal.intent} disabled={conversationDelivery.locked} onChange={e => setModal({...modal, intent: e.target.value})}/>
+              <button className="primary" disabled={conversationDelivery.locked} onClick={() => startConversation(modal.items, modal.intent, "new")}>Start monitoring conversation</button>
+            </div> : <div className="conversation-actions">
               {[
                 "Help me prioritize these reminders.",
                 "Break these reminders into practical next steps.",
                 "Help me plan when to do these reminders.",
                 "Summarize the progress on these reminders.",
               ].map((intent, index) => (
-                <button
-                  key={intent}
-                  onClick={() =>
-                    run(async () => {
-                      await discuss(modal.items, intent);
-                      setModal(null);
-                    })
-                  }
-                >
-                  <MessageSquare size={18} />
-                  <span>
-                    {
-                      [
-                        "Prioritize",
-                        "Break into steps",
-                        "Plan my time",
-                        "Review progress",
-                      ][index]
-                    }
-                  </span>
-                  <ArrowUpRight size={16} />
+                <button key={intent} disabled={conversationDelivery.locked} onClick={() => startConversation(modal.items, intent)}>
+                  <MessageSquare size={18}/>
+                  <span>{["Prioritize", "Break into steps", "Plan my time", "Review progress"][index]}</span>
+                  <ArrowUpRight size={16}/>
                 </button>
               ))}
-              <button
-                onClick={() =>
-                  run(async () => {
-                    await discuss(
-                      modal.items,
-                      "Help me work on these reminders.",
-                      "new",
-                    );
-                    setModal(null);
-                  })
-                }
-              >
-                <Plus size={18} />
-                <span>Start a new conversation</span>
-                <ArrowUpRight size={16} />
+              <button disabled={conversationDelivery.locked} onClick={() => startConversation(modal.items, "Help me work on these reminders.", "new")}>
+                <Plus size={18}/><span>Start a new conversation</span><ArrowUpRight size={16}/>
               </button>
-            </div>
-          ))}
+            </div>}
+          </>}
           {modal.kind === "delete" && (
             <div className="confirm">
               <p>“{modal.item.title}” will move to Recently Deleted.</p>

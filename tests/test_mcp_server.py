@@ -290,7 +290,9 @@ class ModernProtocolTests(unittest.TestCase):
         self.assertEqual(result["cacheScope"], "public")
         self.assertEqual(result["_meta"][remctl_mcp.META_SERVER_INFO]["name"], "remctl")
         self.assertNotIn("icons", result["_meta"][remctl_mcp.META_SERVER_INFO])
-        self.assertEqual([tool["name"] for tool in result["tools"]], [tool.name for tool in remctl_mcp.TOOLS])
+        from remctl_task_plan import TASK_PLAN_TOOLS
+        expected_names = [tool.name for tool in remctl_mcp.TOOLS] + [tool["name"] for tool in TASK_PLAN_TOOLS]
+        self.assertEqual([tool["name"] for tool in result["tools"]], expected_names)
         ping = request(server, "ping", {"_meta": modern_meta()})["result"]
         self.assertEqual(ping["resultType"], "complete")
 

@@ -100,7 +100,9 @@ SERVER_INSTRUCTIONS = (
     "Only delete when the user authorizes it. Use run only "
     "for commands the dedicated tools do not cover; pass exact argv items and include "
     "--json. Destructive run commands need --force. If a tool reports that the Capability "
-    "Host is unavailable, call doctor and follow its fix text instead of retrying blindly."
+    "Host is unavailable, call doctor and follow its fix text instead of retrying blindly. "
+    "For conversational planning, use get_task_context and preview_task_plan first; apply_task_plan "
+    "requires explicit user confirmation and never silently retries an uncertain write."
 )
 
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
@@ -1788,6 +1790,8 @@ class MCPServer:
         # owns UI linkage; otherwise every background read can open a new tab.
         ui_meta = None if self.plugin else tool_ui_meta(apps=context.apps, legacy_aliases=context.legacy_aliases)
         tools = [tool_descriptor(tool, ui_meta=ui_meta) for tool in TOOLS]
+        from remctl_task_plan import TASK_PLAN_TOOLS
+        tools.extend(TASK_PLAN_TOOLS)
         if self.plugin:
             tools.extend(self.plugin.descriptors())
         return self._cacheable({"tools": tools}, context)
@@ -1796,6 +1800,15 @@ class MCPServer:
         name = params.get("name")
         if not isinstance(name, str) or not name:
             raise RPCError(ERR_INVALID_PARAMS, "Missing tool name.")
+        from remctl_task_plan import TASK_PLAN_TOOL_NAMES, handle_task_plan_tool
+        if name in TASK_PLAN_TOOL_NAMES:
+            return handle_task_plan_tool(
+                name,
+                params.get("arguments") or {},
+                executor=self.config.executor,
+                request_key=(request_id, name),
+                config_dir=resolve_config_dir("remctl"),
+            )
         if self.plugin and name not in TOOLS_BY_NAME:
             return self.plugin.call(name, params.get("arguments") or {}, context, request_id, params)
         tool = TOOLS_BY_NAME.get(name)

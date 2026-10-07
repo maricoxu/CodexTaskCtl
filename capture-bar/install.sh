@@ -19,4 +19,4 @@ EOF
 launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "Installed: $APP"
-echo "Shortcut: Cmd+Shift+Space"
+echo "Shortcut: configurable from the Capture Bar menu (default Cmd+Shift+Space)"

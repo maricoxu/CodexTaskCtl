@@ -13,8 +13,12 @@ def main():
     version = json.loads((ROOT / "plugins/remctl/plugin.json").read_text())["version"]
     inputs = [ROOT / "remctl_workspace.html", ROOT / "capture-bar/CodexTaskCtlCaptureBar.swift",
               ROOT / "scripts/install_local_package.py", ROOT / "scripts/start_plugin.py",
+              ROOT / "scripts/codextaskctl-dispatcher.mjs", ROOT / "scripts/install_dispatcher_launchagent.py",
+              ROOT / "remote/codextaskctl-relay.mjs", ROOT / "remote/codextaskctl-agent.mjs",
               ROOT / "plugins/remctl/mcp.json", ROOT / "plugins/remctl/plugin.json", ROOT / "plugins/remctl/launch.sh"]
     inputs += sorted(ROOT.glob("remctl_*.py"))
+    inputs += sorted((ROOT / "plugins/remctl/skills").rglob("SKILL.md"))
+    inputs += sorted((ROOT / "remote").glob("*.mjs"))
     digest = hashlib.sha256(b"".join(p.read_bytes() for p in inputs)).hexdigest()[:12]
     name = "CodexTaskCtl-" + version + "-" + platform.machine() + "-" + digest
     stage = ROOT / "dist" / name
@@ -26,8 +30,10 @@ def main():
     runtime.mkdir()
     for source in [*ROOT.glob("remctl_*.py"), ROOT / "remctl_workspace.html", ROOT / "remctl_mcp_widget.html"]:
         shutil.copy2(source, runtime / source.name)
+    shutil.copy2(ROOT / "scripts/codextaskctl-dispatcher.mjs", runtime / "codextaskctl-dispatcher.mjs")
     shutil.copy2(ROOT / "scripts/start_plugin.py", runtime / "start_plugin.py")
     shutil.copytree(ROOT / ".agents", stage / ".agents")
+    shutil.copytree(ROOT / "remote", stage / "remote")
     app = stage / "CodexTaskCtl Capture.app"
     binary = app / "Contents/MacOS/CodexTaskCtl Capture"
     binary.parent.mkdir(parents=True)
@@ -41,6 +47,9 @@ def main():
         ("capture-bar/open.sh", "Open Capture.command"),
         ("LICENSE", "LICENSE"),
         ("docs/codextaskctl-local-release.md", "README.md"),
+        ("scripts/codextaskctl-dispatcher.mjs", "codextaskctl-dispatcher.mjs"),
+        ("scripts/install_dispatcher_launchagent.py", "install_dispatcher_launchagent.py"),
+        ("docs/codextaskctl-dispatcher-mvp.md", "DISPATCHER-MVP.md"),
     ]:
         shutil.copy2(ROOT / source, stage / dest)
     (stage / "Install.command").write_text(

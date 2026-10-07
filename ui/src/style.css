@@ -1243,3 +1243,10 @@ button.tag:hover { text-decoration: underline; text-underline-offset: 2px; }
 .capture-image-chip { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px; background: var(--fill); max-width: 220px; }
 .capture-image-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .capture-image-thumbnail { width: 44px; height: 34px; object-fit: contain; }
+
+.conversation-delivery { margin: 10px 16px; padding: 12px; flex: none; border-radius: 12px; background: var(--fill-2); color: var(--text); }
+.conversation-delivery p { line-height: 1.5; }
+.conversation-delivery.accepted { border: 1px solid var(--green-ink); }
+.conversation-delivery.unknown, .conversation-delivery.rejected { border: 1px solid var(--orange-ink); }
+.conversation-delivery button { margin-top: 8px; padding: 5px 10px; background: var(--fill-3); }
+.conversation-note { margin: 8px 22px 12px; color: var(--text-2); font-size: 12px; }

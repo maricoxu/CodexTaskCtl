@@ -28,6 +28,7 @@ SOURCE_MANIFEST = {
     "remctl_events": "remctl_events.py",
     "remctl_workspace": "remctl_workspace.py",
     "remctl_plugin": "remctl_plugin.py",
+    "remctl_task_plan": "remctl_task_plan.py",
 }
 DISCOVERED_MODULE_PATTERN = "remctl_*.py"
 ARCHIVE_DESCRIPTOR = 198

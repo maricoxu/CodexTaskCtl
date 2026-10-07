@@ -1,4 +1,5 @@
 import {reminderContext} from "./context-payload";
+import {ConversationDelivery} from "./conversation-delivery";
 import {
   App,
   applyDocumentTheme,
@@ -155,20 +156,17 @@ export async function attach(items: RecordData[]) {
     },
   });
 }
+export const conversationDelivery = new ConversationDelivery((() => { try { return window.sessionStorage; } catch { return undefined; } })());
 export async function discuss(
   items: RecordData[],
   intent: string,
   target: "active" | "new" = "active",
 ) {
-  if (!extensions.message)
-    throw new Error("Conversation actions are unavailable in this host.");
-  await extensions.message.send({
-    role: "user",
-    content: [{type: "text", text: intent}, ...await reminderContext(items,
-      id => call("workspace_detail", {identifier: id}),
-      uri => app.readServerResource({uri}))],
-    _meta: { "openai/message": { target, send: true } },
-  });
+  await conversationDelivery.start(intent, target, async () => {
+    await ready;
+    if (!extensions.message) throw new Error("Conversation actions are unavailable in this host.");
+    return reminderContext(items, id => call("workspace_detail", {identifier: id}), uri => app.readServerResource({uri}));
+  }, (params, options) => extensions.message!.send(params, options));
 }
 export function safeLink(url: string) {
   return /^(https?:|x-apple-reminderkit:|codex:)/i.test(url)

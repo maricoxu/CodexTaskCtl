@@ -150,6 +150,8 @@ codex plugin add remctl@remctl-local
 
 Open 'Reminders' in the Codex sidebar, or ask Codex to open your Reminders workspace. The [Codex plugin guide](docs/desktop-plugin.md) covers updates, settings, keyboard shortcuts, and removal.
 
+The local trusted dispatcher MVP is documented in [DISPATCHER-MVP.md](docs/codextaskctl-dispatcher-mvp.md). It scans unfinished reminders containing `Codex` (case-insensitive), or dispatches one reminder immediately by numeric id. It uses the local Codex App Server, defaults to `read-only` and does not complete reminders automatically.
+
 ![A RemCTL list in Codex with a reminder open in the inspector](https://cdn.macstories.net/images/uploads/2026/09/30/07-inspector-light-1790776780368-d6ee34a75e.png)
 
 ![The calendar layout in dark mode](https://cdn.macstories.net/images/uploads/2026/09/30/12-calendar-dark-1790776812431-03166da0b7.png)

@@ -77,3 +77,63 @@ let uncertain = false;
 try { await saveCapture({operationId:'uncertain-op', images:[]}, {create: async () => {throw new Error('timeout');}, attach: async () => ({}), checkpoint: state => {uncertain = Boolean(state.blocked);}}); } catch {}
 assert.equal(uncertain, true);
 console.log('Quick capture contract passed: create once, attach once, checkpoint uncertain writes.');
+
+const deliveryBundle = await build({entryPoints:[new URL('./src/conversation-delivery.ts',import.meta.url).pathname],bundle:true,write:false,format:'esm',platform:'node'});
+const {ConversationDelivery, DELIVERY_TIMEOUT_MS} = await import('data:text/javascript;base64,'+Buffer.from(deliveryBundle.outputFiles[0].text).toString('base64'));
+assert.equal(DELIVERY_TIMEOUT_MS, 600000);
+const storage = new Map();
+const delivery = new ConversationDelivery({getItem:key=>storage.get(key) ?? null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)});
+const sent = [];
+await delivery.start('Run the reminder', 'new', async()=>[{type:'text',text:'payload'}], async(params, options)=>{
+  sent.push({params,options});
+  return {};
+});
+assert.equal(sent.length, 1);
+assert.equal(sent[0].params._meta['openai/message'].send, true);
+assert.equal(delivery.current.phase, 'accepted');
+const uncertainDelivery = new ConversationDelivery();
+await uncertainDelivery.start('Run once', 'new', async()=>[{type:'text',text:'payload'}], async()=>{throw Object.assign(new Error('Request timed out'), {code:-32001});});
+assert.equal(uncertainDelivery.current.phase, 'unknown');
+assert.equal(uncertainDelivery.locked, true);
+let duplicateCalls = 0;
+await uncertainDelivery.start('Retry', 'new', async()=>[], async()=>{duplicateCalls++; return {};});
+assert.equal(duplicateCalls, 0, 'Uncertain delivery cannot automatically resend');
+uncertainDelivery.acknowledge();
+await uncertainDelivery.start('Retry after checking', 'new', async()=>[], async()=>{duplicateCalls++; return {isError:true};});
+assert.equal(uncertainDelivery.current.phase, 'rejected');
+assert.equal(duplicateCalls, 1);
+
+let releaseHost, waitingCalls = 0, actualParams;
+const waiting = new ConversationDelivery({getItem:key=>storage.get(key) ?? null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)});
+const pendingSend = waiting.start('Wait for host', 'new', async()=>[{type:'text',text:'selected note'}], async params=>{
+  waitingCalls++; actualParams=params;
+  return new Promise(resolve=>{releaseHost=resolve;});
+});
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(waiting.current.phase, 'waiting', 'Dispatch alone must not claim accepted');
+assert.equal(waiting.locked, true);
+waiting.acknowledge();
+assert.equal(waiting.current.phase, 'waiting', 'Cannot dismiss an active request into a retry');
+await waiting.start('Double click', 'new', async()=>[], async()=>{waitingCalls++; return {};});
+assert.equal(waitingCalls, 1);
+assert.equal(JSON.stringify([...storage.values()]).includes('selected note'), false, 'No reminder text persisted');
+const reloaded = new ConversationDelivery({getItem:key=>storage.get(key) ?? null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)});
+assert.equal(reloaded.current.phase, 'unknown', 'Reload does not clear an unconfirmed send');
+assert.equal(reloaded.locked, true);
+releaseHost({});
+await pendingSend;
+assert.equal(waiting.current.phase, 'accepted', 'Late receipt is retained');
+assert.equal(storage.size, 0);
+assert.deepEqual(actualParams._meta, {'openai/message':{target:'new',send:true}});
+
+const refused = new ConversationDelivery();
+await refused.start('Unsupported', 'new', async()=>[], async()=>{throw Object.assign(new Error('Method not found'),{code:-32601});});
+assert.equal(refused.current.phase, 'rejected');
+const beforeSend = new ConversationDelivery();
+await beforeSend.start('Unreadable image', 'new', async()=>{throw new Error('Image not downloaded');}, async()=>{throw new Error('Must not send');});
+assert.equal(beforeSend.current.phase, 'rejected');
+assert.match(beforeSend.current.message,/Image not downloaded/);
+const disconnected = new ConversationDelivery();
+await disconnected.start('Disconnect', 'new', async()=>[], async()=>{throw new Error('Transport closed');});
+assert.equal(disconnected.current.phase, 'unknown');
+console.log('Conversation delivery contracts passed: late receipts, double clicks, rejection, preparation failure, timeout, disconnect, reload protection, and no silent resend.');

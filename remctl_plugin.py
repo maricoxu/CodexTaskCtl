@@ -8,6 +8,7 @@ import tempfile
 import fcntl
 import hashlib
 import subprocess
+import shutil
 import json
 import os
 import re
@@ -26,7 +27,8 @@ MIME = "text/html;profile=mcp-app"
 EMPTY = {"type": "object", "properties": {}, "additionalProperties": False}
 DEFAULTS = {"defaultList": "", "startView": "today", "layout": "list", "density": "comfortable",
             "weekStartsOn": "monday", "advancedFeatures": False, "showCompleted": False,
-            "refreshSeconds": 30, "theme": "system", "loadLinkPreviews": True}
+            "refreshSeconds": 30, "theme": "system", "loadLinkPreviews": True,
+            "dispatcherKeyword": "Codex", "dispatcherWorkspace": os.environ.get("CODEX_TASKCTL_WORKSPACE", "")}
 SETTINGS_SCHEMA = {"type": "object", "properties": {
     "defaultList": {"type": "string", "title": "Default list", "description": "List name or numeric ID"},
     "startView": {"type": "string", "title": "Open to", "enum": ["today", "scheduled", "flagged", "all", "assigned"]},
@@ -38,6 +40,8 @@ SETTINGS_SCHEMA = {"type": "object", "properties": {
     "refreshSeconds": {"type": "integer", "title": "Refresh interval", "minimum": 15, "maximum": 300},
     "theme": {"type": "string", "title": "Appearance", "enum": ["system", "light", "dark"]},
     "loadLinkPreviews": {"type": "boolean", "title": "Load missing link previews", "description": "Fetch artwork from linked public websites when it is not saved on this Mac. Cached Reminders previews always stay available."},
+    "dispatcherKeyword": {"type": "string", "title": "Codex trigger keyword", "description": "Unfinished reminders containing this keyword can be dispatched by the local worker."},
+    "dispatcherWorkspace": {"type": "string", "title": "Codex dispatcher workspace", "description": "Absolute workspace path used by the local dispatcher."},
 }, "additionalProperties": False}
 QUERY_SCHEMA = {"type": "object", "properties": {
     "view": {"type": "string", "enum": ["today", "scheduled", "flagged", "urgent", "overdue", "all", "completed", "deleted", "assigned", "list", "smart"]},
@@ -146,6 +150,11 @@ class Plugin:
                 "operationId": {"type": "string", "maxLength": 128}, "tool": {"type": "string"},
                 "arguments": {"type": "object"}, "expectedRevision": {"type": "string"},
             }, "required": ["operationId", "tool", "arguments"], "additionalProperties": False}, read=False),
+            descriptor("dispatch_codex_reminder", "Run Reminder in Codex", {"type": "object", "properties": {
+                "reminderId": {"type": "integer", "minimum": 1},
+                "workspace": {"type": "string", "maxLength": 4096},
+                "keyword": {"type": "string", "maxLength": 64},
+            }, "required": ["reminderId"], "additionalProperties": False}, read=False),
             descriptor("workspace_catalog", "Reminders Actions"),
             descriptor("export_remctl_file", "Export Reminders", {"type": "object", "properties": {"listId": {"type": "integer"}, "query": QUERY_SCHEMA, "format": {"type": "string", "enum": ["remctl", "json", "csv"]}}, "additionalProperties": False}, read=False),
             descriptor("review_import", "Review RemCTL Import", {"type": "object", "properties": {"document": {"type": "object"}}, "required": ["document"], "additionalProperties": False}),
@@ -273,6 +282,8 @@ class Plugin:
             return self.cli(argv, key)
         if name == "workspace_mutate":
             return self.mutate(args, context, key)
+        if name == "dispatch_codex_reminder":
+            return self.dispatch_codex_reminder(args, key)
         if name == "export_remctl_file":
             if "query" in args and "listId" in args:
                 raise ValueError("Choose a query or listId for export, not both")
@@ -344,6 +355,41 @@ class Plugin:
         if name == "workspace_attach_image":
             return self.mutate({"operationId": args["operationId"], "tool": "_attach_image", "arguments": {**{k:v for k,v in args.items() if k != "operationId"}, "private": True}}, context, key)
         raise ValueError("Unknown plugin action")
+
+    def dispatch_codex_reminder(self, args, key):
+        reminder_id = args["reminderId"]
+        values = self.settings()["values"]
+        workspace = args.get("workspace") or values.get("dispatcherWorkspace") or os.environ.get("CODEX_TASKCTL_WORKSPACE", "")
+        if not isinstance(workspace, str) or not os.path.isabs(workspace) or not os.path.isdir(workspace):
+            raise ValueError("Set an existing absolute Codex dispatcher workspace in RemCTL Settings first.")
+        keyword = args.get("keyword") or values.get("dispatcherKeyword") or "Codex"
+        dispatcher = Path(__file__).with_name("codextaskctl-dispatcher.mjs")
+        if not dispatcher.exists():
+            dispatcher = Path(__file__).resolve().parent / "scripts" / "codextaskctl-dispatcher.mjs"
+        if not dispatcher.exists():
+            raise ValueError("The trusted Codex dispatcher is not installed with this plugin build.")
+        node = os.environ.get("CODEX_TASKCTL_NODE") or shutil.which("node")
+        if not node:
+            for candidate in ("/opt/homebrew/bin/node", "/usr/local/bin/node"):
+                if os.path.exists(candidate):
+                    node = candidate
+                    break
+        if not node:
+            raise ValueError("Node.js is required for the trusted Codex dispatcher.")
+        log_path = self.directory / "dispatcher.log"
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        log = log_path.open("a", encoding="utf-8")
+        try:
+            process = subprocess.Popen([
+                node, str(dispatcher), "--once", "--reminder-id", str(reminder_id),
+                "--keyword", keyword, "--workspace", workspace,
+                "--state", str(self.directory / "dispatcher-state.json"),
+                "--sandbox", "read-only", "--approval-policy", "never",
+            ], cwd=workspace, stdout=log, stderr=log, start_new_session=True,
+                env={**os.environ, "CODEX_TASKCTL_WORKSPACE": workspace})
+        finally:
+            log.close()
+        return result({"status": "queued", "reminderId": reminder_id, "pid": process.pid, "workspace": workspace, "keyword": keyword})
 
     def mutate(self, args, context, key):
         from remctl_mcp import TOOLS_BY_NAME
