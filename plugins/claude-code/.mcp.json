@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "remctl": {
-      "command": "${HOME}/bin/remctl",
+      "command": "/Users/xuyehua/Code/CodexTaskCtl/remctl",
       "args": [
         "mcp"
       ],

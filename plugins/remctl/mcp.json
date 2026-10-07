@@ -3,10 +3,9 @@
   "mcpServers": {
     "remctl": {
       "type": "stdio",
-      "command": "sh",
+      "command": "/Users/xuyehua/Code/CodexTaskCtl/remctl",
       "args": [
-        "-c",
-        "exec \"$HOME/bin/remctl\" mcp"
+        "mcp"
       ],
       "env": {
         "REMCTL_PLUGIN": "1",
