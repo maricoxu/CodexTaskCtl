@@ -551,12 +551,16 @@ function Workspace() {
     setQuickDraft(old => ({...(old || seed), ...defaults}));
     setError(""); setModal(null); setMenu(false); setQuickOpen(true);
   };
-  const add = (another: boolean) => run(async () => {
+  const add = (another: boolean, images: File[] = []) => run(async () => {
     if (!quickDraft?.title?.trim()) return;
     const args = Object.fromEntries(Object.entries({...quickDraft, title: quickDraft.title.trim()}).filter(([,v]) => v !== undefined && v !== ""));
     // Once a reminder exists, clear its draft before refresh so a read failure cannot create it twice.
     const response = await mutate("create_reminder", args);
     if (response.id || response.status === "created") {
+      if (response.id && images.length) {
+        try { await attachImages({id: response.id}, images); }
+        catch (error) { setError(`Reminder created, but image attachment failed: ${String((error as Error).message)}`); }
+      }
       setQuickDraft(another ? {...quickDraft, title: "", notes: ""} : null);
       setQuickOpen(another);
       setToast("Reminder added");
