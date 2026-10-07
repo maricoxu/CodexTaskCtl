@@ -707,7 +707,7 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
         titleField.isEditable = editable
         addButton.isEnabled = editable
         newButton.isEnabled = !submitting
-        immediateButton.isEnabled = editable && dispatcherWorkspace() != nil
+        immediateButton.isEnabled = editable
     }
     private func persistDraft() throws {
         try FileManager.default.createDirectory(at: draftDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -813,14 +813,15 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return value
     }
     private func launchDispatcher(reminderId: Int) -> Bool {
-        guard let workspace = dispatcherWorkspace() else {return false}
         let home = FileManager.default.homeDirectoryForCurrentUser
         let script = ProcessInfo.processInfo.environment["CODEX_TASKCTL_DISPATCHER_PATH"].map(URL.init(fileURLWithPath:)) ?? home.appendingPathComponent(".local/share/CodexTaskCtl/current/codextaskctl-dispatcher.mjs")
         let nodePath = ProcessInfo.processInfo.environment["CODEX_TASKCTL_NODE"] ?? ["/opt/homebrew/bin/node", "/usr/local/bin/node"].first {FileManager.default.isExecutableFile(atPath: $0)}
         guard FileManager.default.isReadableFile(atPath: script.path), let nodePath else {return false}
         let state = home.appendingPathComponent(".config/remctl/desktop/dispatcher-state.json")
         let process = Process(); process.executableURL = URL(fileURLWithPath: nodePath)
-        process.arguments = [script.path, "--once", "--reminder-id", String(reminderId), "--keyword", "Codex", "--workspace", workspace, "--state", state.path, "--sandbox", "read-only", "--approval-policy", "never"]
+        // Queue directly instead of starting a second Dispatcher. The resident
+        // LaunchAgent owns the App Server connection and consumes this request.
+        process.arguments = [script.path, "--queue-immediate", String(reminderId), "--state", state.path]
         process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
         do {try process.run(); return true} catch {return false}
     }

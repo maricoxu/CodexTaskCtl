@@ -14,10 +14,10 @@ LABEL = "com.maricoxu.codextaskctl.dispatcher"
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", required=True)
-    parser.add_argument("--keyword", default="")
-    parser.add_argument("--list", default="延后交给 Codex")
+    parser.add_argument("--keyword", default="Codex")
+    parser.add_argument("--list", default="收集箱")
     parser.add_argument("--list-id", default="")
-    parser.add_argument("--interval-seconds", type=int, default=600)
+    parser.add_argument("--interval-seconds", type=int, default=300)
     parser.add_argument("--uninstall", action="store_true")
     args = parser.parse_args()
     workspace = Path(args.workspace).expanduser().resolve()

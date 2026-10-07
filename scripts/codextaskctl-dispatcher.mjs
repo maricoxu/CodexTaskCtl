@@ -47,7 +47,7 @@ function parseArgs(argv) {
     turnTimeoutMs: Number(process.env.CODEX_TASKCTL_TURN_TIMEOUT_MS || 600_000),
     approvalPolicy: process.env.CODEX_TASKCTL_APPROVAL_POLICY || "never",
     sandbox: process.env.CODEX_TASKCTL_SANDBOX || "read-only",
-    retryFailed: false, retryUnknown: false, dryRun: false, status: false, reminderId: null,
+    retryFailed: false, retryUnknown: false, dryRun: false, status: false, reminderId: null, queueImmediateId: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]; const next = () => argv[++i];
@@ -68,11 +68,13 @@ function parseArgs(argv) {
     else if (arg === "--approval-policy") options.approvalPolicy = next();
     else if (arg === "--sandbox") options.sandbox = next();
     else if (arg === "--reminder-id") options.reminderId = Number(next());
+    else if (arg === "--queue-immediate") options.queueImmediateId = Number(next());
     else if (arg === "--help" || arg === "-h") {
       console.log(`CodexTaskCtl trusted dispatcher
 
   --once Scan once and exit
   --reminder-id ID Dispatch one reminder immediately
+  --queue-immediate ID Queue an immediate reminder without starting a second Dispatcher
   --keyword TEXT Optional title prefix filter; deferred list membership is sufficient by default
   --list NAME | --list-id ID Limit scans to one Reminders list
   --workspace PATH Codex working directory
@@ -91,6 +93,7 @@ function parseArgs(argv) {
   if (!["read-only", "workspace-write", "danger-full-access"].includes(options.sandbox)) throw new Error("Unsupported --sandbox");
   if (!["never", "on-request"].includes(options.approvalPolicy)) throw new Error("Unsupported --approval-policy");
   if (options.reminderId != null && (!Number.isInteger(options.reminderId) || options.reminderId < 1)) throw new Error("--reminder-id must be a positive integer");
+  if (options.queueImmediateId != null && (!Number.isInteger(options.queueImmediateId) || options.queueImmediateId < 1)) throw new Error("--queue-immediate must be a positive integer");
   return options;
 }
 
@@ -576,6 +579,11 @@ function createWakeGate() {
 }
 
 async function run(options) {
+  if (options.queueImmediateId != null) {
+    const result = await queueImmediateRequest(options, options.queueImmediateId);
+    console.log(JSON.stringify(result));
+    return result;
+  }
   if (options.status) {
     console.log(JSON.stringify(await readStatus(options), null, 2));
     return;

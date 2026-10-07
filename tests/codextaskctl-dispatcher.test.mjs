@@ -50,6 +50,7 @@ test("dispatcher defaults to deferred delivery with safe read-only execution", (
   assert.equal(options.list, "延后交给 Codex");
   assert.equal(options.intervalMs, 600000);
   assert.equal(parseArgs(["--status"]).status, true);
+  assert.equal(parseArgs(["--queue-immediate", "42"]).queueImmediateId, 42);
 });
 
 test("dispatcher status summarizes persisted state without requiring Codex", async () => {
