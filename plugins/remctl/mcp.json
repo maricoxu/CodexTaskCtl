@@ -3,13 +3,14 @@
   "mcpServers": {
     "remctl": {
       "type": "stdio",
-      "command": "/Users/xuyehua/Code/CodexTaskCtl/remctl",
+      "command": "sh",
       "args": [
-        "mcp"
+        "-c",
+        "exec \"$HOME/.local/share/CodexTaskCtl/current/plugins/remctl/launch.sh\""
       ],
       "env": {
         "REMCTL_PLUGIN": "1",
-        "REMCTL_PLUGIN_BUILD": "232a4c7c285eaffb"
+        "REMCTL_PLUGIN_BUILD": "4d78bc7a3d603b76"
       }
     }
   }

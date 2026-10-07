@@ -1,7 +1,15 @@
 import AppKit
 import Carbon.HIToolbox
 
-private let defaultList = ProcessInfo.processInfo.environment["CODEX_TASKCTL_CAPTURE_LIST"] ?? "收集箱"
+private func preferredList() -> String {
+    if let list = ProcessInfo.processInfo.environment["CODEX_TASKCTL_CAPTURE_LIST"], !list.isEmpty {return list}
+    let settings = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/remctl/desktop/settings.json")
+    if let data = try? Data(contentsOf: settings),
+       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let list = json["defaultList"] as? String, !list.isEmpty {return list}
+    return "" // Omit --list: RemCTL/EventKit chooses the native default.
+}
+private let defaultList = preferredList()
 private let maxImageBytes = 8 * 1024 * 1024
 
 enum SaveOutcome: Equatable {
@@ -20,7 +28,8 @@ enum SaveOutcome: Equatable {
     }
 }
 func createArguments(title: String, list: String, image: URL?) -> [String] {
-    var args = ["add", "--list", list, "--json"]
+    var args = ["add", "--json"]
+    if !list.isEmpty {args += [Int(list) != nil ? "--list-id" : "--list", list]}
     if let image {args += ["--private", "--image", image.path]}
     return args + ["--", title] // Titles that start with '-' remain literal user text.
 }
@@ -50,6 +59,8 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
     private var statusItem: NSStatusItem!
+    private var previousApplication: NSRunningApplication?
+    private var shownAt: Date?
     private let draftDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/CodexTaskCtl/Capture")
     private var draftURL: URL {draftDirectory.appendingPathComponent("draft.json")}
     private var imageURL: URL {draftDirectory.appendingPathComponent("draft.png")}
@@ -92,6 +103,7 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
         titleField.font = .systemFont(ofSize: 18)
         titleField.setAccessibilityLabel("提醒内容")
         listField = NSTextField(string: defaultList); listField.setAccessibilityLabel("清单")
+        listField.placeholderString = "默认清单（留空沿用提醒事项设置）"
         titleField.target = self; titleField.action = #selector(save)
         imageView = NSImageView(); imageView.imageScaling = .scaleProportionallyDown
         imageView.setAccessibilityLabel("待保存图片")
@@ -133,6 +145,7 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.contentView = content; window.delegate = self
         window.level = .floating; window.hidesOnDeactivate = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.isReleasedWhenClosed = false
         fieldEditor.isFieldEditor = true
         fieldEditor.onImage = { [weak self] image in
             guard let self, !self.submitting, !self.blocked else {return}
@@ -163,13 +176,27 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     private func toggle() {window.isVisible ? hideWindow() : showWindow()}
     @objc private func showWindow() {
-        if let screen = NSScreen.main {
+        let front = NSWorkspace.shared.frontmostApplication
+        if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier {previousApplication = front}
+        shownAt = Date()
+        let screen = NSScreen.screens.first(where: {NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)}) ?? NSScreen.main
+        if let screen {
             window.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - window.frame.width/2, y: screen.visibleFrame.maxY - window.frame.height - 80))
         }
         NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(titleField)
     }
-    @objc private func hideWindow() {try? persistDraft(); window.orderOut(nil)}
+    @objc private func hideWindow() {
+        do {try persistDraft()} catch {statusLabel.stringValue = "草稿保存失败，暂不收起"; return}
+        let shouldReturn = NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        window.orderOut(nil)
+        if shouldReturn {previousApplication?.activate(options: [])}
+    }
+    func windowDidResignKey(_ notification: Notification) {
+        // Clicking elsewhere returns to work without stealing focus back.
+        guard !submitting, let shownAt, Date().timeIntervalSince(shownAt) > 0.3 else {return}
+        try? persistDraft(); window.orderOut(nil)
+    }
     @objc private func removeImage() {
         guard !submitting, !blocked else {return}
         imageData = nil; imageView.image = nil; try? persistDraft(); updateControls()
@@ -219,9 +246,11 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard !submitting, !blocked else {return}
         let title = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let list = listField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty, !list.isEmpty else {statusLabel.stringValue = "请填写提醒内容和清单"; return}
+        guard !title.isEmpty else {statusLabel.stringValue = "请填写提醒内容"; return}
         let executable = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("bin/remctl")
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {statusLabel.stringValue = "请先安装 RemCTL"; return}
+        // Commit marked text before saving; Return while composing Chinese is not submission.
+        if let editor = titleField.currentEditor() as? NSTextView, editor.hasMarkedText() {return}
         submitting = true; updateControls(); statusLabel.stringValue = "正在保存…"
         do {try persistDraft()} catch {submitting = false; updateControls(); statusLabel.stringValue = "草稿保存失败"; return}
         let args = createArguments(title: title, list: list, image: imageData == nil ? nil : imageURL)
@@ -253,10 +282,12 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
 }
 
 if CommandLine.arguments.contains("--self-test") {
-    precondition(createArguments(title:"--help", list:"A B", image:nil) == ["add","--list","A B","--json","--","--help"])
+    precondition(createArguments(title:"--help", list:"A B", image:nil) == ["add","--json","--list","A B","--","--help"])
     precondition(SaveOutcome.decode("{\"status\":\"created\",\"numericId\":1}", exitCode:0) == .saved)
     if case .saved = SaveOutcome.decode("{\"status\":\"partial\",\"numericId\":1}", exitCode:1) {fatalError("Partial write accepted")}
     if case .saved = SaveOutcome.decode("not JSON", exitCode:0) {fatalError("Unconfirmed write accepted")}
+    precondition(createArguments(title:"默认", list:"", image:nil) == ["add","--json","--","默认"])
+    precondition(createArguments(title:"列表 ID", list:"2", image:nil) == ["add","--json","--list-id","2","--","列表 ID"])
     print("Capture save contract passed")
 } else {
     let app = NSApplication.shared

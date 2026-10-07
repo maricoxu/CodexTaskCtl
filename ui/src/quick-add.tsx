@@ -19,8 +19,10 @@ export function QuickAdd({draft, update, lists, busy, error, close, save}: {
   const [reading, setReading] = useState(false);
   const [pasteError, setPasteError] = useState("");
   const latest = useRef(draft); latest.current = draft;
-  const locked = busy || reading || Boolean(draft._capture?.reminderId || draft._capture?.blocked);
-  const canSubmit = !busy && !reading && !draft._capture?.blocked && Boolean(draft.title?.trim());
+  const locked = busy || reading || Boolean(draft._capture?.blocked);
+  const fieldLocked = locked || Boolean(draft._capture?.reminderId);
+  const canSubmit = !busy && !reading && !draft._capture?.blocked && Boolean(draft.title?.trim()) &&
+    (!draft._capture?.reminderId || images.some(image => !image.attached));
   const ingest = async (files: File[]) => {
     if (locked || !files.length) return;
     if (images.length + files.length > 4) {setPasteError("Up to 4 images per reminder."); return;}
@@ -60,19 +62,19 @@ export function QuickAdd({draft, update, lists, busy, error, close, save}: {
         }
       }}>
       <div className="capture-heading"><span>New Reminder</span><button type="button" aria-label="Close quick add" disabled={busy || reading} onClick={close}><X size={17}/></button></div>
-      <div className="capture-title"><span className="capture-circle"/><input ref={title} aria-label="New reminder title" placeholder="What do you need to do?" autoComplete="off" maxLength={1024} value={draft.title || ""} disabled={locked} onChange={e=>set("title",e.target.value)}/></div>
-      {notes && <textarea className="capture-notes" aria-label="Reminder notes" placeholder="Add a note…" rows={3} maxLength={16384} value={draft.notes || ""} disabled={locked} onChange={e=>set("notes",e.target.value)}/>}
+      <div className="capture-title"><span className="capture-circle"/><input ref={title} aria-label="New reminder title" placeholder="What do you need to do?" autoComplete="off" maxLength={1024} value={draft.title || ""} disabled={fieldLocked} onChange={e=>set("title",e.target.value)}/></div>
+      {notes && <textarea className="capture-notes" aria-label="Reminder notes" placeholder="Add a note…" rows={3} maxLength={16384} value={draft.notes || ""} disabled={fieldLocked} onChange={e=>set("notes",e.target.value)}/>}
       {images.length > 0 && <div className="capture-images" aria-label={`${images.length} pasted images`}>
         {images.map((file, index) => <span className="capture-image-chip" key={file.id}><img className="capture-image-thumbnail" src={"data:" + file.mimeType + ";base64," + file.data} alt="Pasted preview"/><span>{file.name || "Pasted image"}</span><button type="button" aria-label={`Remove image ${index + 1}`} disabled={busy || reading || file.attached || Boolean(draft._capture?.blocked)} onClick={() => update({...draft, _capture: {...(draft._capture || {operationId: crypto.randomUUID(), images: []}), images: images.filter((_, i) => i !== index)}})}><X size={12}/></button></span>)}
       </div>}
       {pasteError && <div className="capture-error" role="alert"><AlertCircle size={15}/><span>{pasteError}</span></div>}
       <div className="capture-chips">
-        <label className="capture-chip capture-list"><Select aria-label="Reminder list" disabled={locked || Boolean(draft.parent_id)} value={draft.list_id || draft.list || ""} onChange={e=>update({...draft,list_id:e.target.value ? Number(e.target.value) : undefined,list:undefined,section_id:undefined,section:undefined})}
+        <label className="capture-chip capture-list"><Select aria-label="Reminder list" disabled={fieldLocked || Boolean(draft.parent_id)} value={draft.list_id || draft.list || ""} onChange={e=>update({...draft,list_id:e.target.value ? Number(e.target.value) : undefined,list:undefined,section_id:undefined,section:undefined})}
           options={[{value: "", label: "Default list", text: "Default list", icon: <List size={14}/>}, ...(draft.list && !lists.some(l=>l.title===draft.list) ? [{value: draft.list, label: draft.list, text: draft.list}] : []), ...listChoices(lists)]}/></label>
-        <button type="button" className={"capture-chip " + (draft.due ? "chosen" : "")} aria-expanded={dates} onClick={()=>setDates(!dates)} disabled={locked}><CalendarDays size={14}/>{dateLabel}</button>
-        <label className={"capture-chip " + (draft.priority && draft.priority !== "none" ? "chosen" : "")}><span className="capture-priority">!</span><Select aria-label="Reminder priority" disabled={locked} value={draft.priority || "none"} onChange={e=>set("priority",e.target.value)}><option value="none">Priority</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></Select></label>
+        <button type="button" className={"capture-chip " + (draft.due ? "chosen" : "")} aria-expanded={dates} onClick={()=>setDates(!dates)} disabled={fieldLocked}><CalendarDays size={14}/>{dateLabel}</button>
+        <label className={"capture-chip " + (draft.priority && draft.priority !== "none" ? "chosen" : "")}><span className="capture-priority">!</span><Select aria-label="Reminder priority" disabled={fieldLocked} value={draft.priority || "none"} onChange={e=>set("priority",e.target.value)}><option value="none">Priority</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></Select></label>
         <button type="button" className={"capture-chip capture-icon " + (draft.flagged ? "flagged" : "")} aria-label="Flag reminder" aria-pressed={Boolean(draft.flagged)} disabled={locked} onClick={()=>set("flagged",!draft.flagged)}><Flag size={15} fill={draft.flagged ? "currentColor" : "none"}/></button>
-        <button type="button" className="capture-chip capture-icon" aria-label="Add notes" aria-expanded={notes} disabled={locked} onClick={()=>setNotes(!notes)}><AlignLeft size={15}/></button>
+        <button type="button" className="capture-chip capture-icon" aria-label="Add notes" aria-expanded={notes} disabled={fieldLocked} onClick={()=>setNotes(!notes)}><AlignLeft size={15}/></button>
       </div>
       {dates && <div className="capture-date"><DueEditor value={draft.due || ""} change={v=>set("due",v)}/></div>}
       {error && <div className="capture-error" role="alert"><AlertCircle size={15}/><span>{error}</span></div>}

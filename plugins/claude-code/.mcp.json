@@ -1,12 +1,12 @@
 {
   "mcpServers": {
     "remctl": {
-      "command": "/Users/xuyehua/Code/CodexTaskCtl/remctl",
+      "command": "${HOME}/bin/remctl",
       "args": [
         "mcp"
       ],
       "env": {
-        "REMCTL_PLUGIN_BUILD": "232a4c7c285eaffb"
+        "REMCTL_PLUGIN_BUILD": "4d78bc7a3d603b76"
       }
     }
   }

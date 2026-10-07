@@ -1,13 +1,13 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "remctl",
-  "version": "2.3.1",
-  "description": "Your Apple Reminders. A powerful, beautifully focused Mac workspace.",
+  "version": "2.3.2-codextaskctl.1",
+  "description": "CodexTaskCtl: Apple Reminders with global quick capture and image context.",
   "author": {
     "name": "Federico Viticci",
     "url": "https://macstories.net"
   },
-  "homepage": "https://github.com/viticci/remctl",
+  "homepage": "https://github.com/maricoxu/CodexTaskCtl",
   "license": "MIT",
   "keywords": [
     "reminders",
@@ -19,8 +19,8 @@
     "com.openai": {
       "onboardingSkill": "./skills/onboarding/SKILL.md",
       "interface": {
-        "displayName": "RemCTL",
-        "shortDescription": "Apple Reminders for power users",
+        "displayName": "CodexTaskCtl",
+        "shortDescription": "提醒事项 · 快速收集与图片上下文",
         "longDescription": "Apple Reminders in Codex for Mac, with a sidebar that works like Reminders. List, column, and calendar layouts, an inspector for every field, tags, images, smart lists, templates, and Recently Deleted. Runs locally through the signed RemCTL Capability Host.",
         "developerName": "Federico Viticci",
         "category": "Productivity",

@@ -60,3 +60,20 @@ OpenAIFormSchema.parse(contract.form);
 OpenAISettingsReadResultSchema.parse(contract.settings);
 for(const tool of contract.tools) if(tool._meta?.['openai/ui']) OpenAIUiToolMetadataSchema.parse(tool._meta['openai/ui']);
 console.log('OpenAI SDK contract validation passed: native rich forms, settings, and app entrypoints.');
+const quickCaptureBundle = await build({entryPoints:[new URL('./src/quick-capture.ts',import.meta.url).pathname],bundle:true,write:false,format:'esm',platform:'node'});
+const {saveCapture} = await import('data:text/javascript;base64,'+Buffer.from(quickCaptureBundle.outputFiles[0].text).toString('base64'));
+let created = 0, attached = 0, checkpoints = [];
+const captureResult = await saveCapture({operationId:'capture-op', images:[{id:'image-1', name:'shot.png', mimeType:'image/png', data:'c2hvdA=='}]}, {
+  create: async () => { created++; return {status:'created', id: 77}; },
+  attach: async () => { attached++; return {status:'ok'}; },
+  checkpoint: state => checkpoints.push(JSON.parse(JSON.stringify(state))),
+});
+assert.equal(created, 1);
+assert.equal(attached, 1);
+assert.equal(captureResult.reminderId, 77);
+assert.equal(captureResult.images[0].attached, true);
+assert.equal(checkpoints.length, 2);
+let uncertain = false;
+try { await saveCapture({operationId:'uncertain-op', images:[]}, {create: async () => {throw new Error('timeout');}, attach: async () => ({}), checkpoint: state => {uncertain = Boolean(state.blocked);}}); } catch {}
+assert.equal(uncertain, true);
+console.log('Quick capture contract passed: create once, attach once, checkpoint uncertain writes.');
