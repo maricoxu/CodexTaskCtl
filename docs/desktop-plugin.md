@@ -68,6 +68,18 @@ codex plugin marketplace remove remctl-local
 
 This removes the plugin only. RemCTL and your reminders stay. To remove RemCTL too, see [Uninstall](installation.md#uninstall).
 
+## Quick capture outside Codex
+
+The fork includes an optional standalone Capture Bar. It is designed for capture while another app is frontmost, so you do not need to return to the Codex workspace.
+
+```bash
+./capture-bar/install.sh
+```
+
+`Cmd+Shift+Space` opens it globally. Type a reminder, paste a screenshot, and press Return. The bar writes through the installed RemCTL Capability Host to the configured Apple Reminders list (default: `收集箱`). Draft text and images are kept under `~/Library/Application Support/CodexTaskCtl/Capture/`; an uncertain write locks the draft so retrying cannot silently create a duplicate reminder.
+
+Raycast, Alfred, Keyboard Maestro, and Shortery can call `./capture-bar/open.sh` as an alternate launcher. They are not required for the image or draft flow.
+
 ## The workspace
 
 The standard reminder tools used in conversation return data without opening a workspace. Open Reminders from the sidebar, or explicitly ask to open the workspace, when you want the interface. The standalone MCP server still offers its reminders widget to compatible clients.
