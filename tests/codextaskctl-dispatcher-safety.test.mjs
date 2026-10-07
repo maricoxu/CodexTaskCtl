@@ -65,6 +65,14 @@ test('completion writeback failure retains delivered claim and does not redispat
   assert.equal(f.server.sends, 1);
 });
 
+test('immediate delivery is recorded separately from deferred delivery', async t => {
+  const f = await fixture(t);
+  const result = await startCandidate({...f.options, dispatchTrigger: 'immediate'}, f.server, f.state, f.reminder);
+  assert.equal(result.status, 'delivered');
+  assert.equal(f.state.items['1'].trigger, 'immediate');
+  assert.equal(f.state.items['1'].attempts[0].trigger, 'immediate');
+});
+
 test('turn/start uncertainty keeps the reminder uncompleted and preserves thread binding', async t => {
   const f = await fixture(t);
   f.server.startTurn = async (_c, _i, opts) => { f.server.sends++; await opts.onThreadStarted('accepted-thread'); throw new Error('turn/start timed out'); };
@@ -98,6 +106,19 @@ test('periodic scan ignores ordinary inbox captures and dispatches deferred capt
   const result = await scan(f.options, f.server, f.state);
   assert.equal(result.delivered, 1);
   assert.equal(f.server.sends, 1);
+});
+
+test('periodic scan accepts RemCTL show JSON arrays from the real CLI', async t => {
+  const f = await fixture(t);
+  f.options.remctlCall = async args => {
+    if (args[0] === 'show') return [{...f.reminder}];
+    if (args[0] === 'info') return {...f.reminder};
+    if (args[0] === 'done') { f.reminder.completed = true; return {id: 1, completed: true}; }
+    throw new Error(`Unexpected ${args}`);
+  };
+  const result = await scan(f.options, f.server, f.state);
+  assert.equal(result.delivered, 1);
+  assert.equal(f.reminder.completed, true);
 });
 
 test('a dry scan never writes state or completes reminders', async t => {

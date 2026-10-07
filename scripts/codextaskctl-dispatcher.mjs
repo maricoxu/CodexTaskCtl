@@ -246,6 +246,12 @@ async function remctlJson(options, args) {
   return JSON.parse(stdout);
 }
 
+function resultItems(result) {
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.items)) return result.items;
+  return [];
+}
+
 async function findReminders(options) {
   if (options.reminderId != null) return [await remctlJson(options, ["info", String(options.reminderId), "--json"])]
   const args = options.keyword.trim() ? ["search", options.keyword, "--limit", "500", "--json"] : ["show"];
@@ -254,7 +260,7 @@ async function findReminders(options) {
   }
   if (args[0] === "show") args.push("--json");
   const result = await remctlJson(options, args);
-  return result.items || [];
+  return resultItems(result);
 }
 
 function isCandidate(reminder, options) {
@@ -436,7 +442,8 @@ async function startCandidate(options, server, state, reminder) {
   if (previous) return { status: "skipped", id: originalId, reason: previous.status, threadId: previous.threadId };
   if (options.dryRun) return { status: "candidate", id: originalId, project: project.key };
 
-  const entry = { taskUid: randomUUID(), originalReminderId: originalId, reminderId: originalId, reminderIdentity: reminderIdentity(current), reminderIdentities: [reminderIdentity(current)], reminderIds: [originalId], fingerprint, title: current.title, projectKey: project.key, projectId: project.projectId, workspace: project.cwd || options.workspace, status: "dispatching", attemptId: randomUUID(), attempts: [], startedAt: new Date().toISOString() };
+  const trigger = options.dispatchTrigger || (options.reminderId != null ? "immediate" : "deferred");
+  const entry = { taskUid: randomUUID(), originalReminderId: originalId, reminderId: originalId, reminderIdentity: reminderIdentity(current), reminderIdentities: [reminderIdentity(current)], reminderIds: [originalId], fingerprint, title: current.title, projectKey: project.key, projectId: project.projectId, workspace: project.cwd || options.workspace, status: "dispatching", attemptId: randomUUID(), attempts: [], trigger, startedAt: new Date().toISOString() };
   state.items[String(originalId)] = entry; await writeJsonFile(options.state, state);
   try {
     const started = await server.startTurn(project.cwd || options.workspace, inputFor(current), {
@@ -451,7 +458,7 @@ async function startCandidate(options, server, state, reminder) {
       turnStartedAt: turnStartedAt.toISOString(),
       turnDeadlineAt: new Date(turnStartedAt.getTime() + options.turnTimeoutMs).toISOString(),
     }); await writeJsonFile(options.state, state);
-    entry.attempts.push({ attemptId: entry.attemptId, threadId: entry.threadId, turnId: entry.turnId, fingerprint: entry.fingerprint, startedAt: entry.startedAt, status: "delivered", trigger: options.reminderId != null ? "immediate" : "deferred" });
+    entry.attempts.push({ attemptId: entry.attemptId, threadId: entry.threadId, turnId: entry.turnId, fingerprint: entry.fingerprint, startedAt: entry.startedAt, status: "delivered", trigger });
     await writeJsonFile(options.state, state);
     try {
       await completeReminder(options, entry.reminderId);
@@ -514,7 +521,7 @@ async function scan(options, server, state) {
         const reminder = await hydrate(options, await remctlJson(options, ["info", String(request.reminderId), "--json"]));
         const outcome = reminder.completed
           ? { status: "skipped", id: request.reminderId, reason: "completed" }
-          : await startCandidate(options, server, state, reminder);
+          : await startCandidate({...options, dispatchTrigger: "immediate"}, server, state, reminder);
         result.items.push({ ...outcome, trigger: "immediate" });
         if (["delivered", "started"].includes(outcome.status)) { result.delivered += 1; result.started += 1; }
         else if (outcome.status === "unknown") result.failed += 1;
