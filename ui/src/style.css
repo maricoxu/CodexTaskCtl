@@ -1237,3 +1237,9 @@ button.tag:hover { text-decoration: underline; text-underline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Quick capture keeps staged images visible before creating the reminder. */
+.capture-images { display: flex; gap: 8px; flex-wrap: wrap; padding: 8px 24px; }
+.capture-image-chip { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px; background: var(--fill); max-width: 220px; }
+.capture-image-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.capture-image-thumbnail { width: 44px; height: 34px; object-fit: contain; }

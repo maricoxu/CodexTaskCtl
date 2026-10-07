@@ -90,6 +90,7 @@ import {
 import {TagEditor, AttachmentGallery, SmartListEditor} from "./power";
 import {DueEditor} from "./date-editor";
 import {QuickAdd} from "./quick-add";
+import {saveCapture, type CaptureState} from "./quick-capture";
 import {Select} from "./pickers";
 import {NotePreview, RichLinks} from "./rich-content";
 import icon from "../../plugins/remctl/assets/icon.png";
@@ -551,25 +552,24 @@ function Workspace() {
     setQuickDraft(old => ({...(old || seed), ...defaults}));
     setError(""); setModal(null); setMenu(false); setQuickOpen(true);
   };
-  const add = (another: boolean, images: File[] = []) => run(async () => {
+  const add = (another: boolean) => run(async () => {
     if (!quickDraft?.title?.trim()) return;
-    const args = Object.fromEntries(Object.entries({...quickDraft, title: quickDraft.title.trim()}).filter(([,v]) => v !== undefined && v !== ""));
-    // Once a reminder exists, clear its draft before refresh so a read failure cannot create it twice.
-    const response = await mutate("create_reminder", args);
-    if (response.id || response.status === "created") {
-      if (response.id && images.length) {
-        try { await attachImages({id: response.id}, images); }
-        catch (error) { setError(`Reminder created, but image attachment failed: ${String((error as Error).message)}`); }
-      }
-      setQuickDraft(another ? {...quickDraft, title: "", notes: ""} : null);
-      setQuickOpen(another);
-      setToast("Reminder added");
-      if (response.warnings?.length) setError(response.warnings.join(" · "));
-    }
-    if (response.status === "partial" || response.status === "uncertain") {
-      if (!response.id) setQuickOpen(false);
-      setError(response.message || "Creation needs attention. Refresh before trying again.");
-    }
+    const {_capture, ...fields} = quickDraft;
+    const state: CaptureState = _capture || {operationId: crypto.randomUUID(), images: []};
+    if (state.images.length && !settings.advancedFeatures)
+      throw new Error("Enable Advanced Reminders features in Settings before saving images.");
+    const args = Object.fromEntries(Object.entries({...fields, title: fields.title.trim()}).filter(([,v]) => v !== undefined && v !== ""));
+    await saveCapture(state, {
+      create: operationId => call("workspace_mutate", {operationId, tool: "create_reminder", arguments: args}),
+      attach: (reminderId, image) => call("workspace_attach_image", {
+        operationId: image.id, reminderId, mimeType: image.mimeType, data: image.data,
+      }),
+      checkpoint: capture => setQuickDraft({...fields, _capture: capture}),
+    });
+    // Clear the identity and image draft only after all writes have succeeded.
+    setQuickDraft(another ? {...fields, title: "", notes: ""} : null);
+    setQuickOpen(another);
+    setToast("Reminder and images saved");
     await refresh();
   });
   const bulk = (tool: string, args: D) =>

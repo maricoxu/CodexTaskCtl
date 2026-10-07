@@ -1,3 +1,4 @@
+import {reminderContext} from "./context-payload";
 import {
   App,
   applyDocumentTheme,
@@ -141,15 +142,9 @@ export async function attach(items: RecordData[]) {
   if (!extensions.modelContext)
     throw new Error("This host does not support selected context.");
   return extensions.modelContext.update({
-    content: items.map((i) => ({
-      type: "text" as const,
-      text: `${i.title} (${i.list || "Reminders"}, RemCTL ID ${i.id}${i.resourceUri ? ", " + i.resourceUri : ""})`,
-      _meta: {
-        "openai/title": i.title,
-        "openai/thumbnail": { src: contextIcon, mimeType: "image/png" },
-        "remctl/id": i.id,
-      },
-    })),
+    content: await reminderContext(items,
+      id => call("workspace_detail", {identifier: id}),
+      uri => app.readServerResource({uri})),
     structuredContent: {
       items: items.map(({ id, title, resourceUri, list }) => ({
         id,
@@ -169,12 +164,9 @@ export async function discuss(
     throw new Error("Conversation actions are unavailable in this host.");
   await extensions.message.send({
     role: "user",
-    content: [
-      {
-        type: "text",
-        text: `${intent}\n\n${items.map((i) => `${i.title} — ${i.list || ""} (RemCTL ID ${i.id}${i.resourceUri ? ", " + i.resourceUri : ""})`).join("\n")}`,
-      },
-    ],
+    content: [{type: "text", text: intent}, ...await reminderContext(items,
+      id => call("workspace_detail", {identifier: id}),
+      uri => app.readServerResource({uri}))],
     _meta: { "openai/message": { target, send: true } },
   });
 }
