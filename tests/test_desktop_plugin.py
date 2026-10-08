@@ -78,6 +78,48 @@ class DesktopPluginTests(unittest.TestCase):
         self.assertEqual(value["layout"][0]["kind"],"group")
         self.assertEqual(self.server.capabilities()["extensions"]["openai/settings"]["readTool"],"read_settings")
 
+    def test_dispatcher_enabled_setting_is_model_controllable(self):
+        catalog = {tool["name"]: tool for tool in request(self.server, "tools/list", {})["result"]["tools"]}
+        self.assertIn("set_dispatcher_enabled", catalog)
+        self.assertIn("get_dispatcher_status", catalog)
+        self.assertNotIn("_meta", catalog["get_dispatcher_status"])
+        self.assertFalse(catalog["set_dispatcher_enabled"]["annotations"]["readOnlyHint"])
+        self.assertTrue(self.call("get_dispatcher_status")["structuredContent"]["dispatcherEnabled"])
+        self.call("update_settings", {"set": {"defaultList": "2"}})
+        off = self.call("set_dispatcher_enabled", {"enabled": False})
+        self.assertEqual(off["structuredContent"]["dispatcherEnabled"], False)
+        self.assertEqual(off["structuredContent"]["runtimeState"], "stopped")
+        self.assertEqual(off["structuredContent"]["scope"], "this-device")
+        self.assertEqual(self.call("read_settings")["structuredContent"]["values"]["dispatcherEnabled"], False)
+        self.server = m.MCPServer(m.ServerConfig(version="test", executor=self.executor))
+        self.assertFalse(self.call("get_dispatcher_status")["structuredContent"]["dispatcherEnabled"])
+        self.assertEqual(self.call("read_settings")["structuredContent"]["values"]["defaultList"], "2")
+        with patch("remctl_plugin.subprocess.Popen") as spawn:
+            value = self.call("dispatch_codex_reminder", {"reminderId": 1, "workspace": self.temp.name})
+            self.assertTrue(value["isError"])
+            self.assertIn("disabled", value["structuredContent"]["message"])
+            spawn.assert_not_called()
+        for invalid in ("false", 0, None):
+            self.assertTrue(self.call("set_dispatcher_enabled", {"enabled": invalid})["isError"])
+        on = self.call("set_dispatcher_enabled", {"enabled": True})
+        self.assertEqual(on["structuredContent"]["dispatcherEnabled"], True)
+
+    def test_dispatcher_status_distinguishes_worker_acknowledgement(self):
+        directory = self.server.plugin.directory
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "dispatcher-state.json.lock").write_text(str(os.getpid()))
+        (directory / "dispatcher-state.json").write_text(json.dumps({
+            "meta": {"pid": os.getpid(), "controlVersion": 1, "dispatcherEnabled": True}}))
+        self.assertEqual(self.call("get_dispatcher_status")["structuredContent"]["runtimeState"], "enabled")
+        self.assertEqual(self.call("set_dispatcher_enabled", {"enabled": False})["structuredContent"]["runtimeState"], "pending")
+        (directory / "dispatcher-state.json").write_text(json.dumps({
+            "meta": {"pid": os.getpid(), "controlVersion": 1, "dispatcherEnabled": False}}))
+        status = self.call("get_dispatcher_status")["structuredContent"]
+        self.assertEqual(status["runtimeState"], "disabled")
+        self.assertFalse(status["distributedLock"])
+        (directory / "dispatcher-state.json.lock").unlink()
+        self.assertEqual(self.call("get_dispatcher_status")["structuredContent"]["runtimeState"], "stopped")
+
     def test_mutation_replay_cannot_create_twice_or_change_payload(self):
         args={"operationId":"unique-operation-001","tool":"create_reminder","arguments":{"title":"Demo"}}
         first=self.call("workspace_mutate",args)

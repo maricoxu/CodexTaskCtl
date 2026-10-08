@@ -14,8 +14,8 @@ test("only deferred captures become periodic candidates", () => {
   assert.deepEqual(result.actions.map(item => item.type), ["candidate"]);
 });
 
-test("delivered writeback retries completion without moving lists", async () => {
-  const initial = state({"7": {reminderId: 7, status: "delivered", completionWritebackPending: true, threadId: "thread-7"}});
+test("DONE writeback retries completion without moving lists", async () => {
+  const initial = state({"7": {reminderId: 7, status: "delivered", turnStatus: "completed", completionDecision: "DONE", completionWritebackPending: true, threadId: "thread-7"}});
   const plan = buildReconciliationPlan({state: initial, reminders: [{id: 7, title: "延后任务", list: LISTS.deferred, completed: false}]});
   const calls = [];
   const result = await applyReconciliationPlan({plan, state: initial, now: "2026-10-08T00:00:00Z", adapter: {async completeReminder(id) {calls.push(id);}}});
@@ -32,9 +32,15 @@ test("dry run never invokes the Reminders adapter", async () => {
 });
 
 test("completion writeback errors stay visible and do not mutate the source list", async () => {
-  const initial = state({"7": {reminderId: 7, status: "delivered", completionWritebackPending: true}});
+  const initial = state({"7": {reminderId: 7, status: "delivered", turnStatus: "completed", completionDecision: "DONE", completionWritebackPending: true}});
   const plan = buildReconciliationPlan({state: initial, reminders: [{id: 7, list: LISTS.deferred, completed: false}]});
   const result = await applyReconciliationPlan({plan, state: initial, adapter: {async completeReminder() {throw new Error("temporary");}}});
   assert.equal(result.results[0].applied, false);
   assert.equal(result.state.items["7"].completionWritebackPending, true);
+});
+
+test("legacy delivery-only pending flags cannot complete reminders", () => {
+  const initial = state({"7": {reminderId: 7, status: "delivered", completionWritebackPending: true}});
+  const plan = buildReconciliationPlan({state: initial, reminders: [{id: 7, list: LISTS.deferred, completed: false}]});
+  assert.deepEqual(plan.actions, []);
 });

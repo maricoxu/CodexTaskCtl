@@ -786,9 +786,10 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     switch result {
                     case .saved(let reminderId):
                         if self.dispatchImmediately {
-                            guard let reminderId, self.launchDispatcher(reminderId: reminderId) else {
+                            let dispatchError = reminderId.map { self.launchDispatcher(reminderId: $0) } ?? "未收到提醒 ID，请检查提醒事项。"
+                            if let dispatchError {
                                 self.blocked = true
-                                self.statusLabel.stringValue = "提醒已保存，但立即交给 Codex 未能启动。请检查 Dispatcher 配置；草稿保留。"
+                                self.statusLabel.stringValue = "提醒已保存（ID \(reminderId ?? 0)）。\(dispatchError)"
                                 try? self.persistDraft(); self.updateControls(); return
                             }
                         }
@@ -810,11 +811,12 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let data = try? Data(contentsOf: settings), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let value = json["dispatcherWorkspace"] as? String, !value.isEmpty, FileManager.default.fileExists(atPath: value) else {return nil}
         return value
     }
-    private func launchDispatcher(reminderId: Int) -> Bool {
+    private func launchDispatcher(reminderId: Int) -> String? {
+        let failure = "立即交给 Codex 未能启动，请检查 Dispatcher；勿重复保存。"
         let home = FileManager.default.homeDirectoryForCurrentUser
         let script = ProcessInfo.processInfo.environment["CODEX_TASKCTL_DISPATCHER_PATH"].map(URL.init(fileURLWithPath:)) ?? home.appendingPathComponent(".local/share/CodexTaskCtl/current/codextaskctl-dispatcher.mjs")
         let nodePath = ProcessInfo.processInfo.environment["CODEX_TASKCTL_NODE"] ?? ["/opt/homebrew/bin/node", "/usr/local/bin/node"].first {FileManager.default.isExecutableFile(atPath: $0)}
-        guard FileManager.default.isReadableFile(atPath: script.path), let nodePath else {return false}
+        guard FileManager.default.isReadableFile(atPath: script.path), let nodePath else {return failure}
         let state = home.appendingPathComponent(".config/remctl/desktop/dispatcher-state.json")
         let process = Process(); process.executableURL = URL(fileURLWithPath: nodePath)
         // Queue directly instead of starting a second Dispatcher. The resident
@@ -828,10 +830,10 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard process.terminationStatus == 0,
                   let output = String(data: data, encoding: .utf8),
                   let row = output.split(separator: "\n").reversed().first,
-                  let json = try? JSONSerialization.jsonObject(with: Data(row.utf8)) as? [String: Any],
-                  json["status"] as? String == "queued" else {return false}
-            return true
-        } catch {return false}
+                  let json = try? JSONSerialization.jsonObject(with: Data(row.utf8)) as? [String: Any] else {return failure}
+            if json["status"] as? String == "disabled" {return "本机 Dispatcher 已关闭；开启后可对这条提醒重新发起分发，勿重复保存。"}
+            return json["status"] as? String == "queued" ? nil : failure
+        } catch {return failure}
     }
 }
 

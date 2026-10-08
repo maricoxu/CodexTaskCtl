@@ -11,6 +11,7 @@ import subprocess
 import shutil
 import json
 import os
+import socket
 import re
 import threading
 import uuid
@@ -28,7 +29,8 @@ EMPTY = {"type": "object", "properties": {}, "additionalProperties": False}
 DEFAULTS = {"defaultList": "", "startView": "today", "layout": "list", "density": "comfortable",
             "weekStartsOn": "monday", "advancedFeatures": False, "showCompleted": False,
             "refreshSeconds": 30, "theme": "system", "loadLinkPreviews": True,
-            "dispatcherKeyword": "Codex", "dispatcherWorkspace": os.environ.get("CODEX_TASKCTL_WORKSPACE", "")}
+            "dispatcherKeyword": "Codex", "dispatcherWorkspace": os.environ.get("CODEX_TASKCTL_WORKSPACE", ""),
+            "dispatcherEnabled": True}
 SETTINGS_SCHEMA = {"type": "object", "properties": {
     "defaultList": {"type": "string", "title": "Default list", "description": "List name or numeric ID"},
     "startView": {"type": "string", "title": "Open to", "enum": ["today", "scheduled", "flagged", "all", "assigned"]},
@@ -42,6 +44,7 @@ SETTINGS_SCHEMA = {"type": "object", "properties": {
     "loadLinkPreviews": {"type": "boolean", "title": "Load missing link previews", "description": "Fetch artwork from linked public websites when it is not saved on this Mac. Cached Reminders previews always stay available."},
     "dispatcherKeyword": {"type": "string", "title": "Codex trigger keyword", "description": "Unfinished reminders containing this keyword can be dispatched by the local worker."},
     "dispatcherWorkspace": {"type": "string", "title": "Codex dispatcher workspace", "description": "Absolute workspace path used by the local dispatcher."},
+    "dispatcherEnabled": {"type": "boolean", "title": "Codex dispatcher enabled", "description": "Allow this Mac's local Dispatcher to poll and deliver reminders. Disable before leaving another computer active."},
 }, "additionalProperties": False}
 QUERY_SCHEMA = {"type": "object", "properties": {
     "view": {"type": "string", "enum": ["today", "scheduled", "flagged", "urgent", "overdue", "all", "completed", "deleted", "assigned", "list", "smart"]},
@@ -130,6 +133,32 @@ class Plugin:
         return {"schema": SETTINGS_SCHEMA, "values": values,
                 "layout": [{"kind": "group", "title": "Preferences", "items": [{"kind": "property", "property": key} for key in DEFAULTS]}]}
 
+    def dispatcher_status(self):
+        enabled = self.settings()["values"]["dispatcherEnabled"]
+        if not isinstance(enabled, bool):
+            raise ValueError("Invalid dispatcherEnabled setting")
+        state = self.read_state("dispatcher-state.json", {})
+        meta = state.get("meta", {})
+        pid = meta.get("pid")
+        running = False
+        try:
+            owner = int((self.directory / "dispatcher-state.json.lock").read_text().strip())
+            if isinstance(pid, int) and pid > 0 and owner == pid:
+                os.kill(pid, 0)
+                running = True
+        except (OSError, ValueError):
+            pass
+        observed = meta.get("dispatcherEnabled") if meta.get("controlVersion") == 1 else None
+        runtime = ("enabled" if enabled else "disabled") if running and observed is enabled else ("pending" if running else "stopped")
+        return {"device": socket.gethostname(), "dispatcherEnabled": enabled,
+                "processRunning": running, "runtimeState": runtime,
+                "observedEnabled": observed if running else None,
+                "controlObservedAt": meta.get("controlObservedAt") if running else None,
+                "settingsFile": str(self.directory / "settings.json"),
+                "unfinishedBindings": sum(1 for entry in state.get("items", {}).values()
+                                          if not entry.get("reminderCompletedAt") and entry.get("status") != "completed"),
+                "scope": "this-device", "distributedLock": False}
+
     def descriptors(self):
         operations = list(ADVANCED)
         tools = [
@@ -146,6 +175,8 @@ class Plugin:
                 "order": {"type": "array", "maxItems": 500, "items": {"type": "string", "maxLength": 134}},
             }, "required": ["scope", "order"], "additionalProperties": False}, read=False),
             descriptor("update_settings", "Update RemCTL Settings", {"type": "object", "properties": {"set": SETTINGS_SCHEMA}, "required": ["set"], "additionalProperties": False}, read=False),
+            descriptor("set_dispatcher_enabled", "Set Codex Dispatcher", {"type": "object", "properties": {"enabled": {"type": "boolean"}}, "required": ["enabled"], "additionalProperties": False}, read=False, model=True),
+            descriptor("get_dispatcher_status", "Get this Mac's Codex Dispatcher status", model=True),
             descriptor("workspace_mutate", "Apply a Reminders change", {"type": "object", "properties": {
                 "operationId": {"type": "string", "maxLength": 128}, "tool": {"type": "string"},
                 "arguments": {"type": "object"}, "expectedRevision": {"type": "string"},
@@ -166,6 +197,15 @@ class Plugin:
             descriptor("export_attachment", "Save Attachment to Downloads", {"type":"object","properties":{"reminderId":{"type":"integer","minimum":1},"index":{"type":"integer","minimum":0,"maximum":500}},"required":["reminderId","index"],"additionalProperties":False}, read=False),
         ]
         tools[6]["outputSchema"] = {"type": "object", "properties": {"schema": {"type": "object"}, "values": SETTINGS_SCHEMA, "layout": {"type": "array"}}, "required": ["schema", "values", "layout"]}
+        for tool in tools:
+            if tool["name"] in {"set_dispatcher_enabled", "get_dispatcher_status"}:
+                tool.pop("_meta", None)
+                tool["annotations"].update({"destructiveHint": False, "idempotentHint": True})
+                tool["description"] = ("Persist this Mac's dispatcher switch (default enabled). Stops new dispatch and reminder writeback, keeps existing Codex sessions alive. "
+                                       "The resident worker observes changes in about one second when idle; already started operations may finish. "
+                                       "Query runtimeState to confirm disabled before switching machines. Does not start an absent worker or provide a cross-device lock."
+                                       if tool["name"] == "set_dispatcher_enabled" else
+                                       "Read this Mac's hostname, configured dispatcher switch and worker acknowledgement: enabled, disabled, pending, or stopped. No remote host selection.")
         tools.extend(descriptor(name, spec["title"], spec["schema"], read=spec["read"]) for name, spec in ADVANCED.items())
         return tools
 
@@ -191,7 +231,8 @@ class Plugin:
             value = self._call(name, args, context, key, meta or {})
         except (ValueError, OSError, StopIteration, subprocess.TimeoutExpired) as exc:
             value = result({"status": "error", "message": str(exc) or "Unknown action"}, True)
-        value.setdefault("_meta", {}).update({"ui": {"resourceUri": UI_URI}, "remctl/surface": name})
+        if name not in {"set_dispatcher_enabled", "get_dispatcher_status"}:
+            value.setdefault("_meta", {}).update({"ui": {"resourceUri": UI_URI}, "remctl/surface": name})
         return value
 
     def _call(self, name, args, context, key, meta):
@@ -235,6 +276,13 @@ class Plugin:
                 values = {**DEFAULTS, **self.read_state("settings.json", {}), **args["set"]}
                 write_private_text_file(self.directory / "settings.json", json.dumps(values))
             return result(self.settings())
+        if name == "set_dispatcher_enabled":
+            with self.state_lock():
+                values = {**DEFAULTS, **self.read_state("settings.json", {}), "dispatcherEnabled": args["enabled"]}
+                write_private_text_file(self.directory / "settings.json", json.dumps(values))
+            return result(self.dispatcher_status())
+        if name == "get_dispatcher_status":
+            return result(self.dispatcher_status())
         if name in {"open_workspace", "workspace_query"}:
             values = self.settings()["values"]
             query = {"view": values["startView"], "includeCompleted": values["showCompleted"], **args}
@@ -359,6 +407,8 @@ class Plugin:
     def dispatch_codex_reminder(self, args, key):
         reminder_id = args["reminderId"]
         values = self.settings()["values"]
+        if values.get("dispatcherEnabled") is False:
+            raise ValueError("Codex Dispatcher is disabled on this Mac. Enable it with set_dispatcher_enabled first.")
         workspace = args.get("workspace") or values.get("dispatcherWorkspace") or os.environ.get("CODEX_TASKCTL_WORKSPACE", "")
         if not isinstance(workspace, str) or not os.path.isabs(workspace) or not os.path.isdir(workspace):
             raise ValueError("Set an existing absolute Codex dispatcher workspace in RemCTL Settings first.")

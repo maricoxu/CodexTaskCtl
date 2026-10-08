@@ -3,8 +3,7 @@
 /**
  * Trusted local dispatcher for CodexTaskCtl.
  *
- * The Reminders lists are the user-facing state machine:
- *   收集箱 -> 执行中 -> 待验收 -> completed=true
+ * Delivery claims are local; reminders stay open until confirmed DONE.
  *
  * Keep one App Server connection alive while polling. Closing the client while
  * a turn is running interrupts that turn.
@@ -17,11 +16,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { spawn } from "node:child_process";
+import { watchFile, unwatchFile } from "node:fs";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_KEYWORD = "";
 const DEFAULT_LIST = "延后交给 Codex";
-const DEFAULT_STATE = path.join(os.homedir(), ".config", "remctl", "desktop", "dispatcher-state.json");
+const DEFAULT_STATE = path.join(process.env.REMCTL_CONFIG_DIR || path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "remctl"), "desktop", "dispatcher-state.json");
 const IMMEDIATE_REQUEST_DIR = `${DEFAULT_STATE}.requests`;
 const DEFAULT_REMCTL = path.join(os.homedir(), "bin", "remctl");
 const DEFAULT_CODEX = "codex";
@@ -102,6 +102,38 @@ async function readJsonFile(file, fallback) {
   catch (error) { if (error?.code === "ENOENT") return fallback; throw error; }
 }
 
+function settingsPath(options) {
+  return options.settings || path.join(path.dirname(options.state || DEFAULT_STATE), "settings.json");
+}
+
+async function dispatcherEnabled(options) {
+  if (options.dispatcherEnabled === false) return false;
+  const settings = await readJsonFile(settingsPath(options), {});
+  if (!settings || typeof settings !== "object" || Array.isArray(settings) ||
+      ("dispatcherEnabled" in settings && typeof settings.dispatcherEnabled !== "boolean")) {
+    throw new Error("Invalid dispatcherEnabled setting; dispatch stopped");
+  }
+  return settings.dispatcherEnabled !== false;
+}
+
+function watchDispatcherSettings(options, wake) {
+  const file = settingsPath(options);
+  watchFile(file, {interval: 1000, persistent: false}, wake);
+  return () => unwatchFile(file, wake);
+}
+
+async function observeControl(options, state) {
+  const enabled = await dispatcherEnabled(options);
+  if (!options.dryRun) {
+    state.meta ||= {};
+    Object.assign(state.meta, {pid: process.pid, controlVersion: 1,
+      dispatcherEnabled: enabled, controlObservedAt: new Date().toISOString()});
+    if (!enabled) state.meta.state = "disabled";
+    await writeJsonFile(options.state, state);
+  }
+  return enabled;
+}
+
 async function writeAtomicJson(file, value) {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
@@ -112,6 +144,9 @@ async function writeAtomicJson(file, value) {
 }
 
 async function queueImmediateRequest(options, reminderId) {
+  if (!(await dispatcherEnabled(options))) {
+    return {status: "disabled", id: reminderId, message: "Codex Dispatcher is disabled on this Mac"};
+  }
   const requestDir = options.requestDir || IMMEDIATE_REQUEST_DIR;
   await mkdir(requestDir, { recursive: true, mode: 0o700 });
   const files = await readdir(requestDir).catch(() => []);
@@ -123,7 +158,7 @@ async function queueImmediateRequest(options, reminderId) {
   }
   const file = path.join(requestDir, `${Date.now()}-${randomUUID()}-${reminderId}.json`);
   await writeAtomicJson(file, { reminderId: Number(reminderId), requestedAt: new Date().toISOString(), source: "immediate" });
-  const lock = await readFile(`${DEFAULT_STATE}.lock`, "utf8").catch(() => "");
+  const lock = await readFile(options.lockFile || `${DEFAULT_STATE}.lock`, "utf8").catch(() => "");
   const owner = Number.parseInt(lock.trim(), 10);
   if (owner && owner !== process.pid) { try { process.kill(owner, "SIGUSR1"); } catch { /* owner exited; next scan consumes the request */ } }
   return { status: "queued", id: reminderId, requestFile: file, deduplicated: false };
@@ -298,7 +333,7 @@ function turnText(turn) {
 }
 
 function completionState(response) {
-  const match = response.match(/CODEX_TASKCTL_STATE:\s*(DONE|REVIEW|RUNNING)\b/i);
+  const match = response.trim().match(/(?:^|\n)CODEX_TASKCTL_STATE:[ \t]*(DONE|REVIEW|RUNNING)[ \t]*$/i);
   return match ? match[1].toUpperCase() : "REVIEW";
 }
 
@@ -332,7 +367,10 @@ class CodexAppServer {
       if (message.id != null && this.pending.has(message.id)) {
         const entry = this.pending.get(message.id); this.pending.delete(message.id);
         if (message.error) entry.reject(new Error(message.error.message || `Codex RPC ${message.error.code}`)); else entry.resolve(message.result);
-      } else if (message.method) this.notifications.push(message);
+      } else if (message.method) {
+        this.notifications.push(message);
+        if (message.method === "turn/completed") this.onTurnCompleted?.();
+      }
     }
   }
 
@@ -397,11 +435,33 @@ async function processCompletedTurn(options, state, entry, turn) {
   const attempt = (entry.attempts || []).find(item => item.turnId === entry.turnId);
   if (attempt) { attempt.status = turn.status; attempt.finishedAt = entry.turnCompletedAt; attempt.response = response; }
   if (turn.status !== "completed") entry.turnError = turn.error?.message || `turn ${turn.status}`;
+  if (turn.status === "completed") {
+    const decision = completionState(response);
+    if (decision === "DONE") {
+      // Persist the completion evidence before any external write. Legacy
+      // receipts may already have been checked on delivery; never repeat it.
+      entry.completionDecision = "DONE";
+      entry.completionWritebackPending = !entry.reminderCompletedAt;
+      if (entry.reminderCompletedAt) entry.status = "completed";
+      else {
+        await writeJsonFile(options.state, state);
+        await retryCompletionWriteback(options, state, entry);
+      }
+    } else if (decision === "REVIEW") {
+      entry.completionDecision = "REVIEW";
+      entry.completionWritebackPending = false;
+      entry.status = "review";
+    } else {
+      entry.completionDecision = "RUNNING";
+      entry.completionWritebackPending = false;
+    }
+  }
   await writeJsonFile(options.state, state);
   return true;
 }
 
 async function processCompletion(options, server, state, entry) {
+  if (!(await dispatcherEnabled(options))) return false;
   const deadline = entry.turnDeadlineAt
     ? Date.parse(entry.turnDeadlineAt)
     : (entry.turnStartedAt ? Date.parse(entry.turnStartedAt) + options.turnTimeoutMs : 0);
@@ -435,6 +495,7 @@ async function processCompletion(options, server, state, entry) {
 }
 
 async function startCandidate(options, server, state, reminder) {
+  if (!(await dispatcherEnabled(options))) return {status: "disabled", id: reminder.id};
   const project = classifyReminder(reminder);
   const current = await hydrate(options, reminder);
   const originalId = Number(current.id);
@@ -444,6 +505,7 @@ async function startCandidate(options, server, state, reminder) {
   // uncertain submissions retain their claim; retry flags cannot bypass it.
   if (previous) return { status: "skipped", id: originalId, reason: previous.status, threadId: previous.threadId };
   if (options.dryRun) return { status: "candidate", id: originalId, project: project.key };
+  if (!(await dispatcherEnabled(options))) return {status: "disabled", id: originalId};
 
   const trigger = options.dispatchTrigger || (options.reminderId != null ? "immediate" : "deferred");
   const entry = { taskUid: randomUUID(), originalReminderId: originalId, reminderId: originalId, reminderIdentity: reminderIdentity(current), reminderIdentities: [reminderIdentity(current)], reminderIds: [originalId], fingerprint, title: current.title, projectKey: project.key, projectId: project.projectId, workspace: project.cwd || options.workspace, status: "dispatching", attemptId: randomUUID(), attempts: [], trigger, startedAt: new Date().toISOString() };
@@ -463,15 +525,6 @@ async function startCandidate(options, server, state, reminder) {
     }); await writeJsonFile(options.state, state);
     entry.attempts.push({ attemptId: entry.attemptId, threadId: entry.threadId, turnId: entry.turnId, fingerprint: entry.fingerprint, startedAt: entry.startedAt, status: "delivered", trigger });
     await writeJsonFile(options.state, state);
-    try {
-      await completeReminder(options, entry.reminderId);
-      entry.reminderCompletedAt = new Date().toISOString();
-      entry.completionWritebackPending = false;
-    } catch (error) {
-      entry.completionWritebackPending = true;
-      entry.completionWritebackError = error.message;
-    }
-    await writeJsonFile(options.state, state);
     return { status: "delivered", id: originalId, reminderId: entry.reminderId, threadId: entry.threadId, turnId: entry.turnId, project: project.key, completionWritebackPending: Boolean(entry.completionWritebackPending) };
   } catch (error) {
     // A failed reminder move must not erase a successful dispatch.
@@ -483,11 +536,13 @@ async function startCandidate(options, server, state, reminder) {
 }
 
 async function retryCompletionWriteback(options, state, entry) {
-  if (!entry.completionWritebackPending) return false;
+  if (!entry.completionWritebackPending || entry.turnStatus !== "completed" || entry.completionDecision !== "DONE") return false;
+  if (!(await dispatcherEnabled(options))) return false;
   try {
     await completeReminder(options, entry.reminderId);
     entry.completionWritebackPending = false;
     entry.reminderCompletedAt ||= new Date().toISOString();
+    entry.status = "completed";
     delete entry.completionWritebackError;
     await writeJsonFile(options.state, state);
     return true;
@@ -499,6 +554,9 @@ async function retryCompletionWriteback(options, state, entry) {
 }
 
 async function scan(options, server, state) {
+  if (!(await observeControl(options, state))) {
+    return {scanned: 0, delivered: 0, started: 0, reviewed: 0, completed: 0, skipped: 0, failed: 0, disabled: true, items: []};
+  }
   if (options.dryRun) {
     const candidates = (await findReminders(options)).filter(item => isCandidate(item, options));
     const items = [];
@@ -514,24 +572,28 @@ async function scan(options, server, state) {
   const result = { scanned: 0, delivered: 0, started: 0, reviewed: 0, completed: 0, skipped: 0, failed: 0, items: [] };
   let immediateHandled = false;
   for (const entry of Object.values(state.items)) {
+    if (!(await dispatcherEnabled(options))) break;
     await retryCompletionWriteback(options, state, entry);
     if (server && entry.status === "delivered" && entry.threadId && entry.turnId) await processCompletion(options, server, state, entry);
   }
   if (!options.dryRun) {
     for (const request of await pendingImmediateRequests(options)) {
+      if (!(await dispatcherEnabled(options))) break;
       immediateHandled = true;
+      let keepRequest = false;
       try {
         const reminder = await hydrate(options, await remctlJson(options, ["info", String(request.reminderId), "--json"]));
         const outcome = reminder.completed
           ? { status: "skipped", id: request.reminderId, reason: "completed" }
           : await startCandidate({...options, dispatchTrigger: "immediate"}, server, state, reminder);
+        if (outcome.status === "disabled") { keepRequest = true; break; }
         result.items.push({ ...outcome, trigger: "immediate" });
         if (["delivered", "started"].includes(outcome.status)) { result.delivered += 1; result.started += 1; }
         else if (outcome.status === "unknown") result.failed += 1;
         else result.skipped += 1;
       } catch (error) {
         result.failed += 1; result.items.push({ status: "unknown", id: request.reminderId, trigger: "immediate", error: error.message });
-      } finally { await unlink(request.requestFile).catch(() => {}); }
+      } finally { if (!keepRequest) await unlink(request.requestFile).catch(() => {}); }
     }
   }
   // An immediate request is an explicit trigger. Do not let the same scan fall
@@ -545,9 +607,11 @@ async function scan(options, server, state) {
     await writeJsonFile(options.state, state);
     return result;
   }
+  if (!(await dispatcherEnabled(options))) { await observeControl(options, state); return {...result, disabled: true}; }
   const reminders = (await findReminders(options)).filter(item => isCandidate(item, options)); result.scanned = reminders.length;
   for (const reminder of reminders) {
     const outcome = await startCandidate(options, server, state, reminder); result.items.push(outcome);
+    if (outcome.status === "disabled") break;
     if (outcome.status === "delivered" || outcome.status === "started" || outcome.status === "candidate") { result.delivered += outcome.status === "candidate" ? 0 : 1; result.started += 1; }
     else if (outcome.status === "unknown") result.failed += 1; else result.skipped += 1;
     if (["started", "unknown"].includes(outcome.status)) break;
@@ -559,14 +623,13 @@ async function scan(options, server, state) {
   await writeJsonFile(options.state, state); return result;
 }
 
-async function sleep(ms) { await new Promise(resolve => setTimeout(resolve, ms)); }
-
 function createWakeGate() {
   let wake = null;
   let pending = false;
   const handler = () => { const resolve = wake; wake = null; if (resolve) resolve(); else pending = true; };
   process.on("SIGUSR1", handler);
   return {
+    wake: handler,
     wait(ms) {
       return new Promise(resolve => {
         if (pending) { pending = false; resolve(); return; }
@@ -587,6 +650,10 @@ async function run(options) {
   if (options.status) {
     console.log(JSON.stringify(await readStatus(options), null, 2));
     return;
+  }
+  if ((options.reminderId != null || options.once) && !(await dispatcherEnabled(options))) {
+    const result = {status: "disabled", disabled: true, items: []};
+    console.log(JSON.stringify(result)); return result;
   }
   if (options.reminderId != null) {
     const previous = findEntry(await readJsonFile(options.state, newState()), {id: options.reminderId});
@@ -612,6 +679,8 @@ async function run(options) {
   }
   const server = new CodexAppServer(options.codex);
   const wakeGate = createWakeGate();
+  const stopWatching = watchDispatcherSettings(options, wakeGate.wake);
+  server.onTurnCompleted = wakeGate.wake;
   try {
   const state = await readJsonFile(options.state, newState());
   normalizeStateBindings(state);
@@ -626,14 +695,21 @@ async function run(options) {
       if (entry.status === "dispatching") { entry.status = "unknown"; entry.error = "Dispatcher restarted during dispatch; claim retained"; }
     }
     await writeJsonFile(options.state, state);
-    await server.start();
+    let serverStarted = false;
+    const ensureServer = async () => {
+      if (!serverStarted && await dispatcherEnabled(options)) {
+        await server.start(); serverStarted = true;
+      }
+    };
     if (options.reminderId != null || options.once) {
+      await ensureServer();
       const result = await scan(options, server, state); console.log(JSON.stringify(result, null, 2));
       // Keep the transport alive for work this invocation actually submitted.
       // --once means one inbox scan, not immediate termination of the turn.
       const submitted = result.items.filter(item => ["started", "delivered"].includes(item.status)).map(item => findEntry(state, {id: item.id}));
       while (submitted.some(item => item?.status === "delivered" && !["completed", "failed", "interrupted", "cancelled", "canceled", "unknown"].includes(item.turnStatus))) {
-        await sleep(2000);
+        await wakeGate.wait(2000);
+        if (!(await observeControl(options, state))) continue;
         for (const item of submitted.filter(item => item?.status === "delivered" && !["completed", "failed", "interrupted", "cancelled", "canceled", "unknown"].includes(item.turnStatus))) {
           await processCompletion(options, server, state, item);
         }
@@ -641,14 +717,14 @@ async function run(options) {
       return result;
     }
     for (;;) {
-      try { const result = await scan(options, server, state); console.log(JSON.stringify(result)); }
+      try { await ensureServer(); const result = await scan(options, server, state); console.log(JSON.stringify(result)); }
       catch (error) { state.meta.lastError = error.message; await writeJsonFile(options.state, state); console.error(error.message); }
       await wakeGate.wait(options.intervalMs);
     }
-  } finally { wakeGate.close(); server.close(); await release(); }
+  } finally { stopWatching(); wakeGate.close(); server.close(); await release(); }
 }
 
-export { acquireLock, CodexAppServer, classifyReminder, completionState, findEntry, findReminders, inputFor, isCandidate, normalizeStateBindings, parseArgs, pendingImmediateRequests, processCompletion, promptFor, queueImmediateRequest, readStatus, reminderIdentity, runFingerprint, scan, stableTaskUid, startCandidate, taskContentFor };
+export { acquireLock, CodexAppServer, classifyReminder, completionState, dispatcherEnabled, findEntry, findReminders, inputFor, isCandidate, normalizeStateBindings, parseArgs, pendingImmediateRequests, processCompletion, promptFor, queueImmediateRequest, readStatus, reminderIdentity, runFingerprint, scan, stableTaskUid, startCandidate, taskContentFor, watchDispatcherSettings };
 
 if (path.basename(process.argv[1] || "") === path.basename(fileURLToPath(import.meta.url))) {
   try { await run(parseArgs(process.argv.slice(2))); }
