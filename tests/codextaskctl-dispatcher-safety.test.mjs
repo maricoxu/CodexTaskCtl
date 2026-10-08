@@ -152,6 +152,7 @@ test('dispatcher protocol keeps user input separate from developer instructions'
   server.request = async (method, params) => { calls.push({method, params}); return method === 'thread/start' ? {thread: {id: 'thread'}} : {turn: {id: 'turn'}}; };
   const input = [{type: 'text', text: '任务标题：\n任务正文'}];
   await server.startTurn('/tmp/work', input, {sandbox: 'read-only', approvalPolicy: 'never'});
-  assert.match(calls[0].params.developerInstructions, /CODEX_TASKCTL_STATE: DONE/);
+  assert.doesNotMatch(calls[0].params.developerInstructions, /CODEX_TASKCTL_STATE/);
+  assert.match(calls[0].params.developerInstructions, /只执行用户消息中的任务内容/);
   assert.deepEqual(calls[1].params.input, input);
 });

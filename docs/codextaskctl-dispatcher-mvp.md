@@ -29,7 +29,7 @@ node /Users/xuyehua/Code/CodexTaskCtl/scripts/codextaskctl-dispatcher.mjs \
 
 `--dry-run` 只读，不启动会话、不完成提醒、不改状态。`--once` 只扫描一次延后列表，但会保持连接直到本次提交的 turn 结束，避免一提交就中断任务。
 
-发送给 Codex 的用户消息只包含提醒标题和正文的组合，附件作为独立的本地图片输入。执行状态协议放在 `thread/start.developerInstructions`，不会混入用户任务正文。
+发送给 Codex 的用户消息只包含提醒标题和正文的组合，附件作为独立的本地图片输入。不再要求 Codex 在回答末尾输出机器状态标记。`threadId`、`turnId` 和 turn 生命周期用于防重复、故障追踪和保持执行连接，不把 Codex 的运行状态映射回 Reminders。旧会话可能仍保留创建时注入的指令；新派发使用本协议。
 
 当前 App Server 的 `ThreadStartParams` 没有 `projectId` 字段，后台 stdio Dispatcher 不能直接把新会话挂到 Codex 侧栏项目。项目分类保存在状态记录中，并通过项目映射的 `cwd` 和该目录下的 Codex 配置表达；没有配置专用目录时回退到统一工作区。
 

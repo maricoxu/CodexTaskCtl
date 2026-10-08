@@ -3,8 +3,8 @@
 /**
  * Trusted local dispatcher for CodexTaskCtl.
  *
- * The Reminders lists are the user-facing state machine:
- *   收集箱 -> 执行中 -> 待验收 -> completed=true
+ * Reminders are capture and delivery queues. Mark a reminder completed after
+ * Codex accepts its first turn; do not mirror Codex execution states.
  *
  * Keep one App Server connection alive while polling. Closing the client while
  * a turn is running interrupts that turn.
@@ -34,7 +34,6 @@ const PROJECTS = {
 
 const DISPATCHER_DEVELOPER_INSTRUCTIONS = [
   "这是由 CodexTaskCtl 分发的提醒事项。只执行用户消息中的任务内容。",
-  "任务完成时，在最终回答最后一行输出 CODEX_TASKCTL_STATE: DONE；需要用户确认或复核时输出 CODEX_TASKCTL_STATE: REVIEW；还要继续执行时输出 CODEX_TASKCTL_STATE: RUNNING。",
 ].join("\n");
 
 function parseArgs(argv) {
@@ -292,11 +291,6 @@ function promptFor(reminder) {
 
 function turnText(turn) {
   return (turn?.items || []).filter(item => item.type === "agentMessage" && typeof item.text === "string").map(item => item.text).join("\n").trim();
-}
-
-function completionState(response) {
-  const match = response.match(/CODEX_TASKCTL_STATE:\s*(DONE|REVIEW|RUNNING)\b/i);
-  return match ? match[1].toUpperCase() : "REVIEW";
 }
 
 function inputFor(reminder) {
@@ -640,7 +634,7 @@ async function run(options) {
   } finally { wakeGate.close(); server.close(); await release(); }
 }
 
-export { acquireLock, CodexAppServer, classifyReminder, completionState, findEntry, findReminders, inputFor, isCandidate, normalizeStateBindings, parseArgs, pendingImmediateRequests, processCompletion, promptFor, queueImmediateRequest, readStatus, reminderIdentity, runFingerprint, scan, stableTaskUid, startCandidate, taskContentFor };
+export { acquireLock, CodexAppServer, classifyReminder, findEntry, findReminders, inputFor, isCandidate, normalizeStateBindings, parseArgs, pendingImmediateRequests, processCompletion, promptFor, queueImmediateRequest, readStatus, reminderIdentity, runFingerprint, scan, stableTaskUid, startCandidate, taskContentFor };
 
 if (path.basename(process.argv[1] || "") === path.basename(fileURLToPath(import.meta.url))) {
   try { await run(parseArgs(process.argv.slice(2))); }

@@ -11,6 +11,18 @@ from pathlib import Path
 
 LABEL = "com.maricoxu.codextaskctl.dispatcher"
 
+def tool_path(name, candidates):
+    override = os.environ.get(f"CODEX_TASKCTL_{name.upper()}")
+    if override and Path(override).is_file() and os.access(override, os.X_OK):
+        return override
+    found = shutil.which(name)
+    if found:
+        return found
+    for candidate in candidates:
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", required=True)
@@ -30,8 +42,11 @@ def main():
         agent.unlink(missing_ok=True)
         print("Uninstalled", LABEL)
         return
-    node = shutil.which("node")
-    codex = shutil.which("codex")
+    node = tool_path("node", ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"])
+    codex = tool_path("codex", [
+        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        "/opt/homebrew/bin/codex", "/usr/local/bin/codex",
+    ])
     if not node or not codex:
         parser.error("node and codex must be in PATH")
     source = Path(__file__).resolve().parent / "codextaskctl-dispatcher.mjs"
@@ -49,7 +64,11 @@ def main():
         "RunAtLoad": True,
         "KeepAlive": True,
         "WorkingDirectory": str(workspace),
-        "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CODEX_TASKCTL_WORKSPACE": str(workspace)},
+        "EnvironmentVariables": {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "CODEX_HOME": os.environ.get("CODEX_HOME", str(home / ".codex")),
+            "CODEX_TASKCTL_WORKSPACE": str(workspace),
+        },
         "StandardOutPath": str(state_dir / "dispatcher.log"),
         "StandardErrorPath": str(state_dir / "dispatcher-error.log"),
     }))
