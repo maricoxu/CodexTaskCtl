@@ -3,7 +3,8 @@
 /**
  * Trusted local dispatcher for CodexTaskCtl.
  *
- * Delivery claims are local; reminders stay open until confirmed DONE.
+ * Reminders are capture and delivery queues. Mark a reminder completed after
+ * Codex accepts its first turn; do not mirror Codex execution states.
  *
  * Keep one App Server connection alive while polling. Closing the client while
  * a turn is running interrupts that turn.
@@ -34,7 +35,6 @@ const PROJECTS = {
 
 const DISPATCHER_DEVELOPER_INSTRUCTIONS = [
   "这是由 CodexTaskCtl 分发的提醒事项。只执行用户消息中的任务内容。",
-  "任务完成时，在最终回答最后一行输出 CODEX_TASKCTL_STATE: DONE；需要用户确认或复核时输出 CODEX_TASKCTL_STATE: REVIEW；还要继续执行时输出 CODEX_TASKCTL_STATE: RUNNING。",
 ].join("\n");
 
 function parseArgs(argv) {
@@ -332,11 +332,6 @@ function turnText(turn) {
   return (turn?.items || []).filter(item => item.type === "agentMessage" && typeof item.text === "string").map(item => item.text).join("\n").trim();
 }
 
-function completionState(response) {
-  const match = response.trim().match(/(?:^|\n)CODEX_TASKCTL_STATE:[ \t]*(DONE|REVIEW|RUNNING)[ \t]*$/i);
-  return match ? match[1].toUpperCase() : "REVIEW";
-}
-
 function inputFor(reminder) {
   const inputs = [{ type: "text", text: promptFor(reminder) }];
   for (const attachment of (reminder.attachments || []).slice(0, 8)) {
@@ -435,27 +430,6 @@ async function processCompletedTurn(options, state, entry, turn) {
   const attempt = (entry.attempts || []).find(item => item.turnId === entry.turnId);
   if (attempt) { attempt.status = turn.status; attempt.finishedAt = entry.turnCompletedAt; attempt.response = response; }
   if (turn.status !== "completed") entry.turnError = turn.error?.message || `turn ${turn.status}`;
-  if (turn.status === "completed") {
-    const decision = completionState(response);
-    if (decision === "DONE") {
-      // Persist the completion evidence before any external write. Legacy
-      // receipts may already have been checked on delivery; never repeat it.
-      entry.completionDecision = "DONE";
-      entry.completionWritebackPending = !entry.reminderCompletedAt;
-      if (entry.reminderCompletedAt) entry.status = "completed";
-      else {
-        await writeJsonFile(options.state, state);
-        await retryCompletionWriteback(options, state, entry);
-      }
-    } else if (decision === "REVIEW") {
-      entry.completionDecision = "REVIEW";
-      entry.completionWritebackPending = false;
-      entry.status = "review";
-    } else {
-      entry.completionDecision = "RUNNING";
-      entry.completionWritebackPending = false;
-    }
-  }
   await writeJsonFile(options.state, state);
   return true;
 }
@@ -519,12 +493,13 @@ async function startCandidate(options, server, state, reminder) {
       },
     });
     const turnStartedAt = new Date();
-    Object.assign(entry, started, { status: "delivered", deliveryState: "delivered",
+    Object.assign(entry, started, { status: "delivered", deliveryState: "delivered", completionWritebackPending: true,
       turnStartedAt: turnStartedAt.toISOString(),
       turnDeadlineAt: new Date(turnStartedAt.getTime() + options.turnTimeoutMs).toISOString(),
     }); await writeJsonFile(options.state, state);
     entry.attempts.push({ attemptId: entry.attemptId, threadId: entry.threadId, turnId: entry.turnId, fingerprint: entry.fingerprint, startedAt: entry.startedAt, status: "delivered", trigger });
     await writeJsonFile(options.state, state);
+    await retryCompletionWriteback(options, state, entry);
     return { status: "delivered", id: originalId, reminderId: entry.reminderId, threadId: entry.threadId, turnId: entry.turnId, project: project.key, completionWritebackPending: Boolean(entry.completionWritebackPending) };
   } catch (error) {
     // A failed reminder move must not erase a successful dispatch.
@@ -536,13 +511,12 @@ async function startCandidate(options, server, state, reminder) {
 }
 
 async function retryCompletionWriteback(options, state, entry) {
-  if (!entry.completionWritebackPending || entry.turnStatus !== "completed" || entry.completionDecision !== "DONE") return false;
+  if (!entry.completionWritebackPending || entry.deliveryState !== "delivered" || !entry.threadId || !entry.turnId) return false;
   if (!(await dispatcherEnabled(options))) return false;
   try {
     await completeReminder(options, entry.reminderId);
     entry.completionWritebackPending = false;
     entry.reminderCompletedAt ||= new Date().toISOString();
-    entry.status = "completed";
     delete entry.completionWritebackError;
     await writeJsonFile(options.state, state);
     return true;
@@ -724,7 +698,7 @@ async function run(options) {
   } finally { stopWatching(); wakeGate.close(); server.close(); await release(); }
 }
 
-export { acquireLock, CodexAppServer, classifyReminder, completionState, dispatcherEnabled, findEntry, findReminders, inputFor, isCandidate, normalizeStateBindings, parseArgs, pendingImmediateRequests, processCompletion, promptFor, queueImmediateRequest, readStatus, reminderIdentity, runFingerprint, scan, stableTaskUid, startCandidate, taskContentFor, watchDispatcherSettings };
+export { acquireLock, CodexAppServer, classifyReminder, findEntry, findReminders, inputFor, isCandidate, normalizeStateBindings, parseArgs, pendingImmediateRequests, processCompletion, promptFor, queueImmediateRequest, readStatus, reminderIdentity, runFingerprint, scan, stableTaskUid, startCandidate, taskContentFor, dispatcherEnabled, watchDispatcherSettings };
 
 if (path.basename(process.argv[1] || "") === path.basename(fileURLToPath(import.meta.url))) {
   try { await run(parseArgs(process.argv.slice(2))); }

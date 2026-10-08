@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyReminder, completionState, inputFor, isCandidate, normalizeStateBindings, parseArgs, promptFor, readStatus, runFingerprint, stableTaskUid, taskContentFor } from "../scripts/codextaskctl-dispatcher.mjs";
+import { classifyReminder, inputFor, isCandidate, normalizeStateBindings, parseArgs, promptFor, readStatus, runFingerprint, stableTaskUid, taskContentFor } from "../scripts/codextaskctl-dispatcher.mjs";
 
 test("dispatcher selects only explicit codex reminders", () => {
   const options = parseArgs(["--once", "--keyword", "Codex", "--list-id", "2"]);
@@ -71,13 +71,10 @@ test("legacy bindings receive deterministic task UIDs during migration", () => {
   assert.equal(normalizeStateBindings(state).items["757"].taskUid, state.items["757"].taskUid);
 });
 
-test("dispatcher routes tasks and keeps the four user-facing states", () => {
+test("dispatcher classifies task routing", () => {
   assert.equal(classifyReminder({title: "Codex 写公众号文章", notes: ""}).key, "writing");
   assert.equal(classifyReminder({title: "Codex 调试 CUDA 算子", notes: ""}).key, "technical");
   assert.equal(classifyReminder({title: "Codex 处理一件杂事", notes: ""}).key, "fallback");
-  assert.equal(completionState("结果\nCODEX_TASKCTL_STATE: DONE"), "DONE");
-  assert.equal(completionState("需要复核\nCODEX_TASKCTL_STATE: REVIEW"), "REVIEW");
-  assert.equal(completionState("没有机器标记"), "REVIEW");
 });
 
 test("dispatcher forwards resolved reminder images as local Codex inputs", () => {

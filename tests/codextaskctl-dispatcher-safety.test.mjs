@@ -47,11 +47,11 @@ async function fixture(t) {
   return {dir, options, state, reminder, calls, server, saved, setCompleteFailure: value => {completeFailure = value;}};
 }
 
-test('delivery leaves the reminder open until the turn returns DONE', async t => {
+test('accepted delivery completes the reminder before the turn finishes', async t => {
   const f = await fixture(t);
   const result = await startCandidate(f.options, f.server, f.state, f.reminder);
   assert.equal(result.status, 'delivered');
-  assert.equal(f.reminder.completed, false);
+  assert.equal(f.reminder.completed, true);
   assert.equal(f.state.items['1'].status, 'delivered');
   assert.equal(f.calls.some(args => args[0] === 'edit'), false);
 });
@@ -69,13 +69,14 @@ test('completion writeback failure retains delivered claim and does not redispat
   assert.equal(f.server.sends, 1);
 });
 
-test('a completed turn with DONE is the only completion trigger', async t => {
+test('a DONE marker cannot complete an already delivered reminder again', async t => {
   const f = await fixture(t);
   await startCandidate(f.options, f.server, f.state, f.reminder);
   f.server.takeCompleted = () => ({status: 'completed', items: [{type: 'agentMessage', text: 'answer\nCODEX_TASKCTL_STATE: DONE'}]});
   await processCompletion(f.options, f.server, f.state, f.state.items['1']);
   assert.equal(f.reminder.completed, true);
-  assert.equal(f.state.items['1'].status, 'completed');
+  assert.equal(f.state.items['1'].status, 'delivered');
+  assert.equal(f.calls.filter(args => args[0] === 'done').length, 1);
 });
 
 for (const [turnStatus, response] of [
@@ -85,27 +86,28 @@ for (const [turnStatus, response] of [
   ['completed', '引用 CODEX_TASKCTL_STATE: DONE 并不表示已完成'],
   ['interrupted', 'CODEX_TASKCTL_STATE: DONE'],
 ]) {
-  test(`inbox reminder stays open for ${turnStatus}: ${response}`, async t => {
+  test(`delivery remains completed regardless of later ${turnStatus}: ${response}`, async t => {
     const f = await fixture(t); f.reminder.list = '收集箱';
     await startCandidate({...f.options, dispatchTrigger: 'immediate'}, f.server, f.state, f.reminder);
-    assert.equal(f.calls.some(args => args[0] === 'done'), false);
+    assert.equal(f.calls.filter(args => args[0] === 'done').length, 1);
     f.server.takeCompleted = () => ({status: turnStatus, items: [{type: 'agentMessage', text: response}]});
     await processCompletion(f.options, f.server, f.state, f.state.items['1']);
-    assert.equal(f.reminder.completed, false);
+    assert.equal(f.reminder.completed, true);
+    assert.equal(f.calls.filter(args => args[0] === 'done').length, 1);
     assert.equal(f.reminder.list, '收集箱');
     assert.equal((await startCandidate(f.options, f.server, f.state, f.reminder)).status, 'skipped');
     assert.equal(f.server.sends, 1);
   });
 }
 
-test('retry after confirmed DONE finishes without a second session or completion', async t => {
+test('pending delivery writeback recovers after restart without another session', async t => {
   const f = await fixture(t); f.setCompleteFailure(true);
   await startCandidate(f.options, f.server, f.state, f.reminder);
   f.server.takeCompleted = () => ({status:'completed',items:[{type:'agentMessage',text:'CODEX_TASKCTL_STATE: DONE'}]});
   await processCompletion(f.options, f.server, f.state, f.state.items['1']);
   const restarted = await f.saved(); f.setCompleteFailure(false); f.server.takeCompleted = () => null;
   await scan(f.options, f.server, restarted);
-  assert.equal(restarted.items['1'].status, 'completed');
+  assert.equal(restarted.items['1'].status, 'delivered');
   assert.equal(f.reminder.completed, true);
   assert.equal(f.server.sends, 1);
 });
@@ -170,16 +172,23 @@ test('pause between candidates prevents the second dispatch', async t => {
   assert.equal(f.state.items['2'], undefined);
 });
 
-test('pause defers completion observation and writeback until resume', async t => {
+test('pause after turn acceptance defers only reminder writeback until resume', async t => {
   const f = await fixture(t);
+  const start = f.server.startTurn;
+  f.server.startTurn = async (...args) => {
+    const result = await start(...args);
+    f.options.dispatcherEnabled = false;
+    return result;
+  };
   await startCandidate(f.options, f.server, f.state, f.reminder);
+  assert.equal(f.reminder.completed, false);
+  assert.equal((await f.saved()).items['1'].completionWritebackPending, true);
   let consumed = 0;
-  f.server.takeCompleted = () => { consumed++; return {status: 'completed', items: [{type: 'agentMessage', text: 'CODEX_TASKCTL_STATE: DONE'}]}; };
-  f.options.dispatcherEnabled = false;
-  await processCompletion(f.options, f.server, f.state, f.state.items['1']);
-  assert.equal(consumed, 0); assert.equal(f.reminder.completed, false);
+  f.server.takeCompleted = () => { consumed++; return null; };
+  await scan(f.options, f.server, f.state);
+  assert.equal(consumed, 0);
   f.options.dispatcherEnabled = true;
-  await processCompletion(f.options, f.server, f.state, f.state.items['1']);
+  await scan(f.options, f.server, await f.saved());
   assert.equal(f.reminder.completed, true);
   assert.equal(f.server.sends, 1);
 });
@@ -263,7 +272,7 @@ test('periodic scan accepts RemCTL show JSON arrays from the real CLI', async t 
   };
   const result = await scan(f.options, f.server, f.state);
   assert.equal(result.delivered, 1);
-  assert.equal(f.reminder.completed, false);
+  assert.equal(f.reminder.completed, true);
 });
 
 test('a dry scan never writes state or completes reminders', async t => {
@@ -297,6 +306,7 @@ test('dispatcher protocol keeps user input separate from developer instructions'
   server.request = async (method, params) => { calls.push({method, params}); return method === 'thread/start' ? {thread: {id: 'thread'}} : {turn: {id: 'turn'}}; };
   const input = [{type: 'text', text: '任务标题：\n任务正文'}];
   await server.startTurn('/tmp/work', input, {sandbox: 'read-only', approvalPolicy: 'never'});
-  assert.match(calls[0].params.developerInstructions, /CODEX_TASKCTL_STATE: DONE/);
+  assert.doesNotMatch(calls[0].params.developerInstructions, /CODEX_TASKCTL_STATE/);
+  assert.match(calls[0].params.developerInstructions, /只执行用户消息中的任务内容/);
   assert.deepEqual(calls[1].params.input, input);
 });

@@ -1,6 +1,6 @@
 # CodexTaskCtl Trusted Dispatcher MVP
 
-当前 Dispatcher 扫描配置的提醒列表里的未完成提醒，直接通过本机 Codex App Server 创建 thread 和首轮 turn。提醒保持未完成，只有 turn 真正结束并输出 `CODEX_TASKCTL_STATE: DONE` 才会勾选。
+当前 Dispatcher 默认扫描“延后交给 Codex”中的未完成提醒；Codex 接受 thread 和首个 turn 后就勾选提醒。提醒完成表示交付成功，不表示 Codex 工作完成，也无需机器状态标记。
 
 ## 运行
 
@@ -11,7 +11,7 @@ node /Users/xuyehua/Code/CodexTaskCtl/scripts/codextaskctl-dispatcher.mjs \
   --workspace '/Users/xuyehua/Library/Mobile Documents/iCloud~md~obsidian/Documents/yehua的笔记'
 ```
 
-持续轮询可以去掉 `--once`，用 `--interval-ms 300000` 控制间隔。立即触发可以传 `--reminder-id ID`；这条路径绕过列表扫描，但仍然使用同一个幂等状态文件。要安装每 5 分钟的本机 LaunchAgent，可运行 `python3 scripts/install_dispatcher_launchagent.py --workspace '/absolute/workspace' --list-id 2 --interval-seconds 300`。LaunchAgent 使用一个常驻 Dispatcher 进程内部轮询。
+持续轮询可以去掉 `--once`，用 `--interval-ms 600000` 控制间隔。立即触发可以传 `--reminder-id ID`；这条路径绕过列表扫描，但仍然使用同一个幂等状态文件。要安装每 10 分钟的本机 LaunchAgent，可运行 `python3 scripts/install_dispatcher_launchagent.py --workspace '/absolute/workspace' --list-id 34 --interval-seconds 600`。LaunchAgent 使用一个常驻 Dispatcher 进程内部轮询。
 
 每台电脑有一个本地开关 `dispatcherEnabled`，默认是 `true`，存于本机 `~/.config/remctl/desktop/settings.json`，重启和升级后保留。通过 RemCTL MCP 调用 `set_dispatcher_enabled({"enabled": false})` 暂停，调用 `set_dispatcher_enabled({"enabled": true})` 恢复。开关不依赖 API 账号。
 
@@ -23,7 +23,7 @@ node /Users/xuyehua/Code/CodexTaskCtl/scripts/codextaskctl-dispatcher.mjs \
 
 此次更新保留既有 LaunchAgent 配置：2026-10-08 当前 Mac 扫描“延后交给 Codex”（ID 34）、空关键词、10 分钟周期。CLI 默认也为该清单及 10 分钟；可显式指定 `--keyword Codex --list-id 2 --interval-ms 300000` 改成每 5 分钟检查收集箱关键词任务。
 
-默认使用 `approvalPolicy=never` 和 `sandbox=read-only`。投递账本写入 `~/.config/remctl/desktop/dispatcher-state.json`，锁文件用于防止两个 Dispatcher 同时发送。Reminders 承载收集队列；Codex thread/turn 的运行、复核和失败状态保留在账本，只有明确 DONE 才写入 `completed=true`；图片作为本机图片输入传给 Codex。
+默认使用 `approvalPolicy=never` 和 `sandbox=read-only`。投递账本写入 `~/.config/remctl/desktop/dispatcher-state.json`，锁文件用于防止两个 Dispatcher 同时发送。Reminders 承载收集队列；Codex thread/turn 的运行、复核和失败状态保留在账本，交付确认后写入 `completed=true`；图片作为本机图片输入传给 Codex。
 
 可以用 `--status --state ~/.config/remctl/desktop/dispatcher-state.json` 查看最近扫描时间、最近结果和各状态数量；这个命令只读状态文件，不启动 Codex。每次 `turn/start` 有明确的 60 秒响应超时；Codex 返回完成后，Dispatcher 还会回读提醒确认 `completed=true`，确认失败会保留为异常状态。
 
@@ -31,7 +31,7 @@ node /Users/xuyehua/Code/CodexTaskCtl/scripts/codextaskctl-dispatcher.mjs \
 
 分发以提醒身份去重：保存原始/当前数字 ID、移动产生的 ID 别名和 deepLink。标题、正文、日期或所属清单变化都不会解除已经保存的分发占用记录。内容指纹仅供追踪，不再决定是否重发。
 
-顺序为：读取配置清单 → 保存分发占用记录 → 创建 thread 并立即保存 ID → 提交 turn 并保存 ID → 观察原 turn → completed 且最终行是 `CODEX_TASKCTL_STATE: DONE` → 勾选并回读提醒。不会移动 Reminders 清单；REVIEW、RUNNING、失败、中断或无明确完成标记都保持提醒未完成。进程重启、提交超时、unknown 和旧重试开关都不会另建会话。
+顺序为：保存分发占用记录 → 创建 thread 并持久化 → 提交 turn 并保存交付回执及待勾选标记 → 勾选并回读提醒。勾选失败只补写，不重复发起会话。后续失败、中断或复核不撤销 Reminders 的交付完成状态。
 
 这提供保守的至多一次自动分发：如果进程在收到创建会话回执前崩溃，任务会保留为未知，需要核查；不会以自动再发来掩盖不确定性。不要删除状态文件来解决异常。生产入口统一使用默认状态文件；自定义状态文件仅供隔离实验，不是生产去重库。
 
@@ -39,7 +39,7 @@ node /Users/xuyehua/Code/CodexTaskCtl/scripts/codextaskctl-dispatcher.mjs \
 
 `--dry-run` 只读，不启动会话、不完成提醒、不改状态。`--once` 只扫描一次延后列表，但会保持连接直到本次提交的 turn 结束，避免一提交就中断任务。
 
-发送给 Codex 的用户消息只包含提醒标题和正文的组合，附件作为独立的本地图片输入。执行状态协议放在 `thread/start.developerInstructions`，不会混入用户任务正文。
+发送给 Codex 的用户消息只包含提醒标题和正文的组合，附件作为独立的本地图片输入。不再要求 Codex 在回答末尾输出机器状态标记。`threadId`、`turnId` 和 turn 生命周期用于防重复、故障追踪和保持执行连接，不把 Codex 的运行状态映射回 Reminders。旧会话可能仍保留创建时注入的指令；新派发使用本协议。
 
 当前 App Server 的 `ThreadStartParams` 没有 `projectId` 字段，后台 stdio Dispatcher 不能直接把新会话挂到 Codex 侧栏项目。项目分类保存在状态记录中，并通过项目映射的 `cwd` 和该目录下的 Codex 配置表达；没有配置专用目录时回退到统一工作区。
 
@@ -50,7 +50,7 @@ node /Users/xuyehua/Code/CodexTaskCtl/scripts/codextaskctl-dispatcher.mjs \
 | 场景 | 周期扫描 | 立即送往 Codex | 预期结果 |
 |---|---:|---:|---|
 | 普通收集箱提醒 | 否 | 未点击 | 完全忽略，不创建 thread/turn |
-| 延后列表中的未完成提醒 | 是 | 未点击 | 创建一次 thread/turn，明确 DONE 后才勾选提醒 |
+| 延后列表中的未完成提醒 | 是 | 未点击 | 创建一次 thread/turn，成功接受首个 turn 后勾选提醒 |
 | 不含 Codex，点击立即送往 Codex | 否 | 是 | 写入幂等请求队列，常驻 Dispatcher 立即消费并创建一次 thread/turn |
 | 含 Codex，同时点击立即送往 Codex | 是 | 是 | 立即请求优先，只消费一次；周期扫描不会再次创建会话 |
 | 重复点击立即按钮 | 任意 | 多次 | 同一提醒只保留一个请求和一个会话绑定 |

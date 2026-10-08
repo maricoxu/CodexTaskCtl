@@ -58,7 +58,7 @@ export function buildReconciliationPlan({state, reminders = [], today = todayInS
   }
   for (const [key, entry] of Object.entries(normalized.items)) {
     const reminder = byId.get(String(entry.reminderId ?? entry.originalReminderId));
-    if (entry.completionWritebackPending && entry.turnStatus === "completed" && entry.completionDecision === "DONE" && reminder && !reminder.completed) {
+    if (entry.completionWritebackPending && entry.deliveryState === "delivered" && entry.threadId && entry.turnId && reminder && !reminder.completed) {
       actions.push({type: "complete", key, reminderId: idOf(reminder)});
     }
   }
@@ -71,12 +71,12 @@ export async function applyReconciliationPlan({plan, state, adapter, now = new D
   for (const action of plan?.actions || []) {
     if (action.type === "candidate") { results.push({...action, applied: false}); continue; }
     const entry = nextState.items[action.key];
-    if (entry?.turnStatus !== "completed" || entry?.completionDecision !== "DONE") {
-      results.push({...action, applied: false, error: "No confirmed DONE turn"}); continue;
+    if (entry?.deliveryState !== "delivered" || !entry?.threadId || !entry?.turnId) {
+      results.push({...action, applied: false, error: "No confirmed delivery"}); continue;
     }
     try {
       await adapter.completeReminder(action.reminderId);
-      if (entry) { entry.status = "completed"; entry.completionWritebackPending = false; entry.reminderCompletedAt ||= now; entry.reconciledAt = now; }
+      if (entry) { entry.completionWritebackPending = false; entry.reminderCompletedAt ||= now; entry.reconciledAt = now; }
       results.push({...action, applied: true});
     } catch (error) { results.push({...action, applied: false, error: error?.message || String(error)}); }
   }

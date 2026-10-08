@@ -337,10 +337,24 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     private func buildWindow() {
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 660, height: 410))
-        titleField = CaptureTextView(frame: .zero)
+        titleField = CaptureTextView(frame: NSRect(x: 0, y: 0, width: 616, height: 58))
         titleField.isRichText = false
         titleField.isEditable = true
         titleField.isSelectable = true
+        // Do not rely on NSTextView's process/appearance default here. On some
+        // macOS installations the default typing attributes inherit a
+        // transparent or background-matching foreground, so AX sees the text
+        // while the editor appears empty.
+        titleField.textColor = .black
+        titleField.insertionPointColor = .black
+        titleField.typingAttributes = [
+            .font: NSFont.systemFont(ofSize: 18),
+            .foregroundColor: NSColor.black,
+        ]
+        titleField.isHorizontallyResizable = false
+        titleField.isVerticallyResizable = false
+        titleField.autoresizingMask = [.width]
+        titleField.textContainer?.widthTracksTextView = true
         titleField.drawsBackground = true
         titleField.backgroundColor = .textBackgroundColor
         titleField.font = .systemFont(ofSize: 18)
@@ -358,10 +372,20 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
         titleScroll.drawsBackground = false
         titleScroll.borderType = .noBorder
 
-        bodyField = CaptureTextView(frame: .zero)
+        bodyField = CaptureTextView(frame: NSRect(x: 0, y: 0, width: 616, height: 217))
         bodyField.isRichText = false
         bodyField.isEditable = true
         bodyField.isSelectable = true
+        bodyField.textColor = .black
+        bodyField.insertionPointColor = .black
+        bodyField.typingAttributes = [
+            .font: NSFont.systemFont(ofSize: 16),
+            .foregroundColor: NSColor.black,
+        ]
+        bodyField.isHorizontallyResizable = false
+        bodyField.isVerticallyResizable = true
+        bodyField.autoresizingMask = [.width]
+        bodyField.textContainer?.widthTracksTextView = true
         bodyField.drawsBackground = true
         bodyField.backgroundColor = .textBackgroundColor
         bodyField.font = .systemFont(ofSize: 16)
