@@ -769,10 +769,8 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
         submitting = true; updateControls(); statusLabel.stringValue = "正在保存…"
         do {try persistDraft()} catch {submitting = false; updateControls(); statusLabel.stringValue = "草稿保存失败"; return}
         let args = createArguments(title: title, list: list, notes: notes, images: imageData.indices.map {imageURL($0)})
-        // Immediate dispatch intentionally leaves the visible window before
-        // invoking RemCTL. The draft is already persisted and remains
-        // recoverable if either the reminder write or dispatcher launch fails.
-        if dispatchImmediately {hideWindow()}
+        // Keep the window visible until RemCTL confirms the reminder. If the
+        // write fails, the user must see the error and retain the draft.
         DispatchQueue.global(qos: .userInitiated).async {
             let process = Process(); process.executableURL = executable; process.arguments = args
             let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
@@ -822,8 +820,18 @@ final class CaptureBar: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Queue directly instead of starting a second Dispatcher. The resident
         // LaunchAgent owns the App Server connection and consumes this request.
         process.arguments = [script.path, "--queue-immediate", String(reminderId), "--state", state.path]
-        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-        do {try process.run(); return true} catch {return false}
+        let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8),
+                  let row = output.split(separator: "\n").reversed().first,
+                  let json = try? JSONSerialization.jsonObject(with: Data(row.utf8)) as? [String: Any],
+                  json["status"] as? String == "queued" else {return false}
+            return true
+        } catch {return false}
     }
 }
 

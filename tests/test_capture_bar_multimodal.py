@@ -41,5 +41,6 @@ class CaptureBarMultimodalTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "capture-bar/CodexTaskCtlCaptureBar.swift").read_text()
         self.assertIn('NSButton(title: "保存并立即交给 Codex", target: self, action: #selector(saveAndDispatch))', source)
         self.assertIn("@objc private func saveAndDispatch()", source)
-        self.assertIn("if dispatchImmediately {hideWindow()}", source)
-        self.assertIn("process.arguments = [script.path, \"--once\"", source)
+        self.assertNotIn("if dispatchImmediately {hideWindow()}", source)
+        self.assertIn("process.arguments = [script.path, \"--queue-immediate\"", source)
+        self.assertIn("process.terminationStatus == 0", source)
